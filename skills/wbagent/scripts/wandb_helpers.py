@@ -777,6 +777,9 @@ def create_comparison_report(
 
     panels: list[Any] = [wr.LinePlot(title=m, x=x_axis, y=[m]) for m in decision_metrics]
     panels += [wr.LinePlot(title=m, x=x_axis, y=[m]) for m in (health_metrics or [])]
+    # Always include a RunComparer so reviewers can immediately see what
+    # configs/summary values differ across the pinned runs.
+    panels.append(wr.RunComparer(diff_only="on"))
 
     # Width caveat (2026-04): SDK accepts {readable, fixed, fluid} but the
     # backend silently drops the field — saved reports render at the project

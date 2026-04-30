@@ -66,6 +66,19 @@ Notes:
 - `header_md` is optional — if you want a custom intro, build it as markdown
   and pass it in.
 - Reports save as drafts by default; the URL is still shareable.
+- The helper automatically appends a `RunComparer` panel to the PanelGrid so
+  reviewers can immediately see what configs/summary values differ across
+  the pinned runs. Don't strip it.
+
+## Always include a RunComparer
+
+Every PanelGrid this skill produces must include a `wr.RunComparer(diff_only="on")`
+panel alongside the metric plots. The whole point of a comparison report is to
+answer "what's different across these runs?" at a glance — the RunComparer
+surfaces config + summary diffs without the reviewer having to click into each
+run. The `create_comparison_report` helper does this for you; if you build a
+PanelGrid by hand (custom blocks or report updates), append a RunComparer
+yourself.
 
 ## Authoring from scratch (when you need custom blocks)
 
@@ -93,7 +106,10 @@ report = wr.Report(
         wr.H1(text="Project analysis"),
         wr.P(text="Summary of recent runs."),
         wr.H2(text="Top-line metrics"),
-        wr.PanelGrid(runsets=[runset], panels=[loss_panel, acc_panel]),
+        wr.PanelGrid(
+            runsets=[runset],
+            panels=[loss_panel, acc_panel, wr.RunComparer(diff_only="on")],
+        ),
         wr.H2(text="Notes"),
         wr.MarkdownBlock(text="- Bullet 1\n- Bullet 2"),
     ],
@@ -133,7 +149,10 @@ report.blocks += [
             entity=report.entity, project=report.project,
             filters=f"ID in {['NEW_RUN_ID']!r}",
         )],
-        panels=[wr.LinePlot(title="val/loss", x="train/global_step", y=["val/loss"])],
+        panels=[
+            wr.LinePlot(title="val/loss", x="train/global_step", y=["val/loss"]),
+            wr.RunComparer(diff_only="on"),
+        ],
     ),
 ]
 
