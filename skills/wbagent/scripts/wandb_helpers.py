@@ -34,6 +34,7 @@ Usage:
         find_run_by_name,         # Resolve a run URL by display_name without log scraping
         runtime_estimate,         # Wall-clock projection from prior runs of the same class
         create_comparison_report, # Reports v2 dashboard for a set of runs + metrics
+        validate_flags,           # Check flags against a training script's --help before launching
     )
 """
 
@@ -190,6 +191,7 @@ query Runs($project: String!, $entity: String!, $cursor: String,
                 node {
                     id
                     name
+                    displayName
                     state
                     createdAt
                     summaryMetrics(keys: %KEYS%)
@@ -338,6 +340,7 @@ def fetch_runs(
             row: dict[str, Any] = {
                 "id": node["id"],
                 "name": node["name"],
+                "display_name": node.get("displayName"),
                 "state": node["state"],
                 "created_at": node["createdAt"],
             }
@@ -651,6 +654,7 @@ def runtime_estimate(
     name_pattern: str,
     target_steps: int,
     sample: int = 5,
+    min_steps: int | None = None,
 ) -> dict[str, Any] | None:
     """Estimate wall-clock for `target_steps` from prior runs matching a name pattern.
 
@@ -661,12 +665,23 @@ def runtime_estimate(
                       share (e.g. "abupt", "transolver"). Matched against
                       `display_name`.
         target_steps: Step count for the new run.
-        sample: How many recent matching finished runs to sample.
+        sample: How many recent matching finished runs to *consider* before
+                filtering by `min_steps`.
+        min_steps: Drop runs whose final `train/global_step` is below this
+                   floor. Smokes (≤ a few hundred steps) have very different
+                   per-step throughput than full runs (cold caches, lower
+                   batch, smaller GPU count); pooling them inflates the
+                   `target_hours_low`/`target_hours_high` band. Default
+                   `max(target_steps // 10, 1000)`.
 
     Returns:
-        Dict with `runs_used`, `target_hours_low`, `target_hours_high`, `notes`,
-        or None if no matching prior runs exist.
+        Dict with `runs_used`, `target_hours_low`, `target_hours_high`,
+        `notes`, and `excluded_short_runs` (count filtered by min_steps),
+        or None if no matching prior runs exist after filtering.
     """
+    if min_steps is None:
+        min_steps = max(target_steps // 10, 1000)
+
     runs = api.runs(
         project,
         filters={"state": "finished", "display_name": {"$regex": name_pattern}},
@@ -674,11 +689,16 @@ def runtime_estimate(
         per_page=sample,
     )
     samples: list[tuple[float, int]] = []
+    excluded = 0
     for run in list(runs)[:sample]:
         runtime = run.summary_metrics.get("_runtime")
         steps = run.summary_metrics.get("train/global_step")
-        if runtime and steps and steps > 0:
-            samples.append((runtime / 3600.0, int(steps)))
+        if not (runtime and steps and steps > 0):
+            continue
+        if steps < min_steps:
+            excluded += 1
+            continue
+        samples.append((runtime / 3600.0, int(steps)))
 
     if not samples:
         return None
@@ -689,6 +709,8 @@ def runtime_estimate(
 
     return {
         "runs_used": len(samples),
+        "excluded_short_runs": excluded,
+        "min_steps": min_steps,
         "samples": samples,
         "target_hours_low": round(target_low, 2),
         "target_hours_high": round(target_high, 2),
@@ -816,3 +838,52 @@ def compare_configs(
                 run_b.name: val_b,
             })
     return diffs
+
+
+# ---------------------------------------------------------------------------
+# Flag validation against a training script's --help
+# ---------------------------------------------------------------------------
+
+def validate_flags(
+    script: str | list[str],
+    flags: list[str],
+    timeout_s: int = 30,
+) -> dict[str, Any]:
+    """Check that each flag in `flags` is recognized by `<script> --help`.
+
+    Catches a common simple_parsing footgun: nested dataclasses are flattened,
+    so YAML's `model: {slice_num: ...}` is exposed as `--slice_num`, NOT
+    `--model.slice_num`. Run this before writing launch commands so a typo
+    doesn't burn a smoke round.
+
+    Args:
+        script: Either the full command list (e.g. `["uv", "run", "python",
+                "scripts/train.py"]`) or a single string that will be
+                shell-split. The tool appends `--help` itself.
+        flags: Flags to check, with or without leading dashes (e.g.
+               `["--slice_num", "max_steps"]`).
+        timeout_s: Hard cap on the help invocation.
+
+    Returns:
+        `{"present": [...], "missing": [...], "help_text": "..."}`. Caller
+        decides how to react — typically: fail Phase 2 if `missing` is
+        non-empty.
+    """
+    import shlex
+    import subprocess
+
+    cmd = shlex.split(script) if isinstance(script, str) else list(script)
+    cmd.append("--help")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+    help_text = (result.stdout or "") + (result.stderr or "")
+
+    present, missing = [], []
+    for raw in flags:
+        flag = raw.lstrip("-")
+        # Word-boundary match on `--<flag>` to avoid `--foo` matching `--foobar`.
+        import re as _re
+        if _re.search(rf"--{_re.escape(flag)}\b", help_text):
+            present.append(raw)
+        else:
+            missing.append(raw)
+    return {"present": present, "missing": missing, "help_text": help_text}

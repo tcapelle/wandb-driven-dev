@@ -173,7 +173,18 @@ Write into `## Design`:
 - step budget + one-line rationale
 - expected wall-clock + GPU count
 
-Optionally use `runtime_estimate(api, project, name_pattern, target_steps)` for the wall-clock projection.
+**Flag validation gate (mandatory before writing the commands).** `simple_parsing` flattens nested dataclasses, so YAML's `model: {slice_num: ...}` is exposed as `--slice_num`, NOT `--model.slice_num`. A typo here costs a smoke round. Validate every flag against the training script's `--help` first:
+
+```python
+from wandb_helpers import validate_flags
+proposed = ["--max_steps", "--slice_num", "--n_layers"]  # whatever your variant overrides
+result = validate_flags(f"uv run {cfg['training']['script']}", proposed)
+assert not result["missing"], f"Phase 2 flag gate failed: {result['missing']}"
+```
+
+If any flag is missing, fix the command before writing it into `## Design` — don't paper over it.
+
+Optionally use `runtime_estimate(api, project, name_pattern, target_steps, min_steps=...)` for the wall-clock projection. Pass `min_steps` (e.g. `target_steps // 10`) to keep smoke runs out of the throughput sample.
 
 ### 3. Smoke (gate: clean exit AND every metric in `## Metrics` shows up in wandb)
 

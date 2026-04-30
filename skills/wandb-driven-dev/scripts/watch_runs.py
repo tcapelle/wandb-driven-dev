@@ -2,10 +2,15 @@
 """ETA-aware watcher for an experiment's wandb runs.
 
 Strategy: don't blind-poll. Project ETA from each run's current `train/global_step`
-+ `_runtime`, sleep until ~70% of the slowest ETA, then poll every poll_every_s
-seconds until every named run is in a terminal state (or hard deadline hits).
-Writes status JSON every poll iteration, and a staged ## Result markdown block
-on terminal — never edits plan.md directly.
++ `_runtime`, sleep until ~70% of the slowest ETA, then poll adaptively until
+every named run is in a terminal state (or hard deadline hits). Writes status
+JSON every poll iteration, and a staged ## Result markdown block on terminal —
+never edits plan.md directly.
+
+Each snapshot is a single GraphQL call (`fetch_runs`) filtered by the
+`exp-<slug>-*` name regex. No per-id round-trips, so the eventual-consistency
+window for fresh runs (where `api.runs(...)` lists a run that `api.run(id)`
+can't yet resolve) is sidestepped entirely.
 
 Usage:
     uv run python watch_runs.py <slug> [--target_steps 20000]
@@ -33,7 +38,7 @@ _HERE = Path(__file__).resolve().parent  # skills/wandb-driven-dev/scripts
 sys.path.insert(0, str(_HERE.parent.parent / "wbagent" / "scripts"))
 sys.path.insert(0, str(_HERE))
 
-from wandb_helpers import get_api  # noqa: E402
+from wandb_helpers import fetch_runs, get_api  # noqa: E402
 from wdd_helpers import read_config  # noqa: E402
 
 TERMINAL_STATES = {"finished", "failed", "crashed", "killed"}
@@ -43,45 +48,52 @@ def log(msg: str) -> None:
     print(f"[{dt.datetime.now().isoformat(timespec='seconds')}] {msg}", flush=True)
 
 
-def find_experiment_runs(api, project: str, slug: str):
-    """Find non-smoke runs whose name matches `exp-<slug>-variant-*` or `exp-<slug>-baseline`."""
-    pattern = re.compile(rf"^exp-{re.escape(slug)}-(variant(-.+)?|baseline)$")
-    runs = api.runs(project, filters={"display_name": {"$regex": f"^exp-{re.escape(slug)}-"}}, per_page=20)
-    return [r for r in runs if pattern.match(r.name)]
-
-
-def per_run_eta_seconds(run, target_steps: int) -> float | None:
-    """Project remaining wall-clock for one running run. None if not enough signal."""
-    if run.state != "running":
-        return 0.0 if run.state in TERMINAL_STATES else None
-    step = run.summary_metrics.get("train/global_step") or 0
-    elapsed = run.summary_metrics.get("_runtime") or 0
-    if step <= 0 or elapsed <= 0 or step >= target_steps:
+def _eta_seconds(state: str, step: float | None, elapsed: float | None, target_steps: int) -> float | None:
+    """Project remaining wall-clock for one run. None if not enough signal."""
+    if state in TERMINAL_STATES:
+        return 0.0
+    if state != "running":
+        return None
+    if not step or not elapsed or step <= 0 or elapsed <= 0 or step >= target_steps:
         return None
     return elapsed * (target_steps - step) / step
 
 
-def snapshot_status(api, runs, project: str, target_steps: int, decision_metrics: list[str]) -> dict:
-    """Refetch each run and build a status dict."""
+def snapshot_status(api, project: str, slug: str, target_steps: int, decision_metrics: list[str]) -> dict:
+    """One GraphQL call → a status dict for every `exp-<slug>-*` run.
+
+    Filters to non-smoke roles (`baseline`, `variant`, `variant-<id>`) by name regex.
+    """
+    name_pattern = rf"^exp-{re.escape(slug)}-(variant(-.+)?|baseline)$"
+    rows = fetch_runs(
+        api, project,
+        metric_keys=["train/global_step", "_runtime", *decision_metrics],
+        filters={"display_name": {"$regex": name_pattern}},
+        limit=20,
+    )
+
     out = {"now": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "runs": []}
     fresh_max_eta = 0.0
     any_running = False
-    for r in runs:
-        run = api.run(f"{project}/{r.id}")
-        eta = per_run_eta_seconds(run, target_steps)
-        running = run.state == "running"
-        any_running = any_running or running
+    entity, project_name = project.split("/", 1)
+    for row in rows:
+        step = row.get("train/global_step")
+        elapsed = row.get("_runtime")
+        state = row.get("state")
+        eta = _eta_seconds(state, step, elapsed, target_steps)
+        if state == "running":
+            any_running = True
         if eta and eta > fresh_max_eta:
             fresh_max_eta = eta
         out["runs"].append({
-            "id": run.id,
-            "name": run.name,
-            "state": run.state,
-            "url": run.url,
-            "step": run.summary_metrics.get("train/global_step"),
-            "runtime_s": run.summary_metrics.get("_runtime"),
+            "id": row.get("name"),  # wandb's short id (e.g. "9b3apa87"); used to build URL
+            "name": row.get("display_name") or row.get("name"),
+            "state": state,
+            "url": f"https://wandb.ai/{entity}/{project_name}/runs/{row.get('name')}",
+            "step": step,
+            "runtime_s": elapsed,
             "eta_s": eta,
-            "metrics": {k: run.summary_metrics.get(k) for k in decision_metrics},
+            "metrics": {k: row.get(k) for k in decision_metrics},
         })
     out["any_running"] = any_running
     out["max_eta_s"] = fresh_max_eta
@@ -174,15 +186,13 @@ def main():
     staged_path = logs_dir / "05-staged-result.md"
 
     api = get_api()
-    runs = find_experiment_runs(api, project, args.slug)
-    if not runs:
-        sys.exit(f"FAIL: no runs match exp-{args.slug}-* in {project}")
-    log(f"Watching {len(runs)} runs: {[r.name for r in runs]}")
-
     deadline = time.time() + args.max_wait_min * 60
 
-    # --- ETA-aware initial sleep ---
-    status = snapshot_status(api, runs, project, args.target_steps, decision_metrics)
+    # --- Initial snapshot + ETA-aware sleep ---
+    status = snapshot_status(api, project, args.slug, args.target_steps, decision_metrics)
+    if not status["runs"]:
+        sys.exit(f"FAIL: no runs match exp-{args.slug}-* in {project}")
+    log(f"Watching {len(status['runs'])} runs: {[r['name'] for r in status['runs']]}")
     write_status(status, status_path)
     if status["any_running"] and status["max_eta_s"] > 0:
         sleep_s = max(60, int(status["max_eta_s"] * args.initial_sleep_frac))
@@ -192,7 +202,7 @@ def main():
 
     # --- Adaptive poll loop ---
     while time.time() < deadline:
-        status = snapshot_status(api, runs, project, args.target_steps, decision_metrics)
+        status = snapshot_status(api, project, args.slug, args.target_steps, decision_metrics)
         write_status(status, status_path)
         log(f"Poll: any_running={status['any_running']} max_eta={status['max_eta_s']:.0f}s")
         if not status["any_running"]:
