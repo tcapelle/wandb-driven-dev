@@ -1,0 +1,11 @@
+{
+  "name": "wandb-driven-dev",
+  "version": "0.1.0",
+  "description": "Experiment-driven development for ML codebases. Hypothesis-first, baseline+variant, smoke-before-full discipline with W&B as the source of truth. Bundles wbagent (W&B/Weave querying + Launch) and wandb-reports skills, plus on-demand W&B query and EDD reviewer agents.",
+  "author": {
+    "name": "Thomas Capelle",
+    "email": "tcapelle@coreweave.com"
+  },
+  "homepage": "https://github.com/tcapelle/wandb-driven-dev",
+  "keywords": ["wandb", "weave", "ml", "experiment", "training", "research", "edd"]
+}

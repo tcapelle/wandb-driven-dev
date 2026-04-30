@@ -1,0 +1,13 @@
+{
+  "name": "wandb-driven-dev-local",
+  "owner": {
+    "name": "Thomas Capelle"
+  },
+  "plugins": [
+    {
+      "name": "wandb-driven-dev",
+      "source": "./",
+      "description": "Experiment-driven development for ML codebases — hypothesis-first, baseline+variant, smoke-before-full discipline with W&B as the source of truth."
+    }
+  ]
+}
