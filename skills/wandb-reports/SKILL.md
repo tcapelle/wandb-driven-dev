@@ -85,9 +85,14 @@ yourself.
 For non-comparison reports — overviews, post-mortems, multi-section narrative
 — use the SDK directly:
 
+> **Install requirement:** Reports use the `wandb_workspaces` package, which
+> ships as an extra: `pip install 'wandb[workspaces]'` (or
+> `uv pip install 'wandb[workspaces]'`). The legacy `wandb.apis.reports`
+> module no longer ships `LinePlot`/`PanelGrid` and will fail at import.
+
 ```python
-import wandb, os
-from wandb.apis import reports as wr
+import os
+import wandb_workspaces.reports.v2 as wr
 
 entity = os.environ["WANDB_ENTITY"]
 project = os.environ["WANDB_PROJECT"]
@@ -108,7 +113,7 @@ report = wr.Report(
         wr.H2(text="Top-line metrics"),
         wr.PanelGrid(
             runsets=[runset],
-            panels=[loss_panel, acc_panel, wr.RunComparer(diff_only="on")],
+            panels=[loss_panel, acc_panel, wr.RunComparer(diff_only=True)],
         ),
         wr.H2(text="Notes"),
         wr.MarkdownBlock(text="- Bullet 1\n- Bullet 2"),
@@ -131,7 +136,7 @@ saving in place:
 
 ```python
 import wandb
-from wandb.apis import reports as wr
+import wandb_workspaces.reports.v2 as wr
 
 api = wandb.Api(timeout=60)
 report = api.report("REPORT_URL_OR_PATH")
