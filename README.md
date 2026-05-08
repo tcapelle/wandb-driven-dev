@@ -10,9 +10,12 @@ against, and a falsifier written before the run started. Nothing merges on vibes
 
 | Skill | Trigger | Purpose |
 |---|---|---|
-| `wandb-driven-dev` | `/wandb-driven-dev` (also auto-triggers on "experiment", "ablation", "is A better than B") | The methodology — Phases 0–6 from setup to cleanup, with config, worktree bootstrap, smoke gates, launch, ETA-aware watcher, and review. |
+| `wandb-driven-dev` | `/wandb-driven-dev` (also auto-triggers on "experiment", "ablation", "is A better than B", and W&B Report requests) | The methodology — Phases 0–6 from setup to cleanup, with config, worktree bootstrap, smoke gates, launch, ETA-aware watcher, review, and experiment report helpers. |
 | `wbagent` | Auto-triggered on W&B/Weave queries | Toolkit for querying training runs, traces, evaluations; relaunching runs; submitting new jobs to a Launch queue. |
-| `wandb-reports` | `/wandb-driven-dev:wandb-reports` (also auto-triggers on "create a wandb report", "summarize project as report") | Authoring and updating W&B Reports. |
+
+Experiment report helpers live in `wandb-driven-dev`; generic W&B Reports SDK
+details come from the upstream `wbagent` reference at
+`skills/wbagent/references/REPORTS.md`.
 
 ### Agents
 
@@ -35,6 +38,29 @@ pointing at it directly:
 ```bash
 cc --plugin-dir /path/to/wandb-driven-dev
 ```
+
+`wbagent` is sourced from the upstream W&B core repository at
+`services/wb_agent/src/agent_repository/context_content/production/wbagent/skills/wbagent`.
+This repo keeps `wandb/core` as a sparse submodule under `vendor/wandb-core`
+and exposes the skill with `skills/wbagent` as a symlink.
+
+After cloning this plugin, initialize only the upstream `wbagent` path:
+
+```bash
+scripts/init-wbagent-submodule.sh
+```
+
+`wbagent` updates regularly upstream. To manually pull the latest version from
+`wandb/core` later:
+
+```bash
+scripts/update-wbagent-submodule.sh
+git add vendor/wandb-core
+```
+
+This intentionally advances only the pinned submodule commit. The plugin keeps
+using the previous `wbagent` until you stage and commit the updated
+`vendor/wandb-core` gitlink.
 
 ## Quick start
 
@@ -99,12 +125,12 @@ wandb-driven-dev/
 ├── skills/
 │   ├── wandb-driven-dev/
 │   │   ├── SKILL.md
-│   │   └── scripts/{wdd_helpers.py, watch_runs.py, bootstrap_experiment.sh}
+│   │   └── scripts/{wdd_helpers.py, create_report.py, watch_runs.py, bootstrap_experiment.sh}
 │   ├── wbagent/
 │   │   ├── SKILL.md
-│   │   ├── scripts/{wandb_helpers.py, weave_helpers.py, launch_helpers.py}
-│   │   └── references/{WANDB_CONCEPTS.md, WANDB_SDK.md, WEAVE_SDK.md}
-│   └── wandb-reports/SKILL.md
+│   │   ├── scripts/*.py
+│   │   └── references/*.md
 ├── agents/{wandb-query.md, reviewer.md}
-└── templates/wandb-driven-dev.local.md.template
+├── templates/wandb-driven-dev.local.md.template
+└── vendor/wandb-core/  # sparse submodule for upstream wbagent
 ```

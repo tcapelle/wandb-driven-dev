@@ -1,0 +1,5 @@
+[submodule "vendor/wandb-core"]
+	path = vendor/wandb-core
+	url = https://github.com/wandb/core.git
+	branch = master
+	shallow = true

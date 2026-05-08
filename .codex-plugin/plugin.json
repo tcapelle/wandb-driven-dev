@@ -21,7 +21,7 @@
   "interface": {
     "displayName": "W&B Driven Dev",
     "shortDescription": "Experiment-driven ML development workflows",
-    "longDescription": "Hypothesis-first ML experiment workflow with W&B-backed baselines, smoke gates, launch discipline, run monitoring, and review.",
+    "longDescription": "Hypothesis-first ML experiment workflow with W&B-backed baselines, smoke gates, launch discipline, run monitoring, review, and experiment report helpers.",
     "developerName": "Thomas Capelle",
     "category": "Productivity",
     "capabilities": [
@@ -32,7 +32,8 @@
     "defaultPrompt": [
       "Set up experiment-driven development for this repo.",
       "Plan and launch a W&B-backed ablation.",
-      "Review an experiment result from W&B runs."
+      "Review an experiment result from W&B runs.",
+      "Create a W&B Report comparing these runs."
     ],
     "brandColor": "#FFBE00"
   }

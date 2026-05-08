@@ -86,6 +86,13 @@ Inherited from \`.claude/wandb-driven-dev.local.md\` unless overridden here.
 - **Decision:** (override list, or "use config default")
 - **Health:** (override list, or "use config default")
 
+## Report Columns
+Optional focused table columns for the report: config inputs changed by the
+experiment and summary outputs you care about. Examples:
+- config.lr
+- config.model.depth
+- val/loss
+
 ## Design        (filled in Phase 2)
 ## Smoke         (filled in Phase 3)
 ## Runs          (filled in Phase 4)

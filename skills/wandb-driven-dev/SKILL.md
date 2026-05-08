@@ -1,6 +1,6 @@
 ---
 name: wandb-driven-dev
-description: "Enforce a systematic, reproducible approach to empirical questions — hypothesis first, baseline + variant, smoke before full, wandb as source of truth. Use whenever the user asks 'does X work?', 'is A better than B?', 'what's the best N?', or says 'experiment', 'ablation', 'benchmark', 'sweep'. Applies to ML training, ablations, perf benchmarks, correctness tests. Produces wandb runs reviewable and mergeable with confidence."
+description: "Enforce a systematic, reproducible approach to empirical questions — hypothesis first, baseline + variant, smoke before full, wandb as source of truth. Use whenever the user asks 'does X work?', 'is A better than B?', 'what's the best N?', or says 'experiment', 'ablation', 'benchmark', 'sweep'. Also use for creating or updating W&B Reports, dashboards, and publishable run comparisons from W&B runs. Applies to ML training, ablations, perf benchmarks, correctness tests, and reportable experiment reviews."
 user-invocable: true
 argument-hint: "[setup | reconfigure | review experiment <slug> | <empty>]"
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent
@@ -13,7 +13,9 @@ Any empirical claim is backed by a wandb run, a baseline to compare against, and
 
 ## When to invoke
 
-Any empirical question. Skip if the answer is already in existing code, logs, or wandb runs — check first.
+Any empirical question. Also invoke for W&B Report, dashboard, or publishable
+run-comparison requests. Skip if the answer is already in existing code, logs,
+or wandb runs — check first.
 
 ## Setup mode
 
@@ -30,22 +32,37 @@ from wdd_helpers import read_config
 cfg = read_config()  # None if not yet configured
 ```
 
-## Wandb work delegated to wbagent
+## Wandb querying delegated to wbagent
 
-Don't reinvent wandb queries. Every helper used below lives in
-`${CLAUDE_PLUGIN_ROOT}/skills/wbagent/scripts/wandb_helpers.py`. Standard preamble:
+Don't reinvent wandb queries. Generic query helpers live in
+`${CLAUDE_PLUGIN_ROOT}/skills/wbagent/scripts/wandb_helpers.py`; experiment
+gate helpers live in `scripts/wdd_helpers.py`. Standard preamble:
 
 ```python
 import sys, os
 sys.path.insert(0, f"{os.environ['CLAUDE_PLUGIN_ROOT']}/skills/wbagent/scripts")
+sys.path.insert(0, f"{os.environ['CLAUDE_PLUGIN_ROOT']}/skills/wandb-driven-dev/scripts")
 from wandb_helpers import (
-    get_api, fetch_runs, find_runs_by_config,
-    verify_required_metrics, find_run_by_name, runtime_estimate,
-    compare_configs, scan_history,
+    get_api, fetch_runs, compare_configs, scan_history,
+)
+from wdd_helpers import (
+    find_runs_by_config, verify_required_metrics,
+    find_run_by_name, runtime_estimate, validate_flags,
 )
 ```
 
-wandb-driven-dev helpers (config IO, the experiment Reports wrapper) live in `scripts/wdd_helpers.py`.
+wandb-driven-dev helpers (config IO and experiment report construction) live in `scripts/wdd_helpers.py`.
+
+## Reports
+
+For any request to create or update a W&B Report, dashboard, or publishable run
+comparison, use `scripts/wdd_helpers.py` for experiment-specific report
+construction. For lower-level Reports SDK details such as Runset filters,
+ordering, and explicit run selection, read
+`${CLAUDE_PLUGIN_ROOT}/skills/wbagent/references/REPORTS.md`.
+
+Do not delegate experiment comparison report creation to `wbagent`; use
+`wbagent` only to query/discover runs and metrics.
 
 ## Off-thread analysis
 
@@ -146,6 +163,11 @@ Inherited from `.claude/wandb-driven-dev.local.md` unless overridden here.
 - **Decision:** ...
 - **Health:** ...
 
+## Report Columns
+Optional focused table columns for the report: config inputs changed by the
+experiment and summary outputs you care about. Use keys like `config.lr`,
+`config.model.depth`, `val/loss`.
+
 ## Design        (filled in Phase 2)
 ## Smoke         (filled in Phase 3)
 ## Runs          (filled in Phase 4)
@@ -176,7 +198,7 @@ Write into `## Design`:
 **Flag validation gate (mandatory before writing the commands).** `simple_parsing` flattens nested dataclasses, so YAML's `model: {slice_num: ...}` is exposed as `--slice_num`, NOT `--model.slice_num`. A typo here costs a smoke round. Validate every flag against the training script's `--help` first:
 
 ```python
-from wandb_helpers import validate_flags
+from wdd_helpers import validate_flags
 proposed = ["--max_steps", "--slice_num", "--n_layers"]  # whatever your variant overrides
 result = validate_flags(f"uv run {cfg['training']['script']}", proposed)
 assert not result["missing"], f"Phase 2 flag gate failed: {result['missing']}"
@@ -214,30 +236,39 @@ If a required metric is missing: instrument the log call, fix eval cadence, or �
 
 Submit baseline and variant with the approved commands. Use `--wandb_tags exp/<slug>,<role>` and `--wandb_name exp-<slug>-<role>`. If the baseline is pinned, only launch the variant.
 
-Resolve URLs via wandb, not pod logs (the wandb startup banner can lag the launcher by minutes; `wandb.init` registers the run on the server within seconds):
+Create the live dashboard via the hardcoded report workflow. It resolves run
+URLs from W&B and `plan.md`, validates every decision/health metric, creates a
+pinned report, and splices run/report URLs into `## Runs`:
 
-```python
-for role in ["baseline", "variant"]:
-    run = find_run_by_name(get_api(), cfg["wandb_project"], f"exp-<slug>-{role}", timeout_s=120)
-    print(f"{role}: {run.url if run else 'NOT FOUND'}")
+```bash
+uv run python ${CLAUDE_PLUGIN_ROOT}/skills/wandb-driven-dev/scripts/create_report.py <slug>
 ```
 
-Create the live dashboard:
+To show only the experiment inputs and outputs you care about in the focused
+comparison table, either fill `## Report Columns` in `plan.md` or pass them:
 
-```python
-from wdd_helpers import create_experiment_report
-url = create_experiment_report(
-    project=cfg["wandb_project"],
-    slug="<slug>",
-    decision_metrics=cfg["metrics"]["decision"],
-    health_metrics=cfg["metrics"]["health"],
-    question="<from plan.md>",
-    falsifier="<from plan.md>",
-    runs={"baseline": "<url>", "variant": "<url>"},
-)
+```bash
+uv run python ${CLAUDE_PLUGIN_ROOT}/skills/wandb-driven-dev/scripts/create_report.py \
+    <slug> --columns config.lr,config.model.depth,val/loss
 ```
 
-Record URLs and the report link in `## Runs`.
+The report always includes the RunComparer panel. Focused columns add a compact
+table above the plots; they do not replace the full diff panel.
+
+If the Reports SDK grows a RunComparer column allowlist, wire `--columns` into
+that API directly. Until then, keep RunComparer visible and use the focused
+table as the curated view.
+
+For pinned-baseline or multi-variant experiments, record any pinned run URL in
+`plan.md` first, or pass explicit required roles:
+
+```bash
+uv run python ${CLAUDE_PLUGIN_ROOT}/skills/wandb-driven-dev/scripts/create_report.py \
+    <slug> --roles baseline,variant-a,variant-b
+```
+
+The script prints JSON with `report_url`, `runs`, metric-check output, and
+`plan_updated`. Treat nonzero exit as a Phase 4 gate failure.
 
 **Spawn the watcher** (optional, only when expected runtime fits in ~1 hour). `scripts/watch_runs.py` projects ETA from each run's `train/global_step` + `_runtime`, sleeps until ~70% of the slowest ETA, then enters an **adaptive** poll loop where each subsequent sleep is `0.5 × current max ETA` (floored at 60 s). The wait shrinks naturally as runs converge — typically ~3–5 polls total instead of a constant 2-minute interval. Hard `--max_wait_min` deadline. Burns ~zero LLM tokens (Python loop, not an agent).
 

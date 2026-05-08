@@ -16,6 +16,8 @@ You have access to:
 
 - **Helper scripts** at `${CLAUDE_PLUGIN_ROOT}/skills/wbagent/scripts/`
   (`wandb_helpers.py`, `weave_helpers.py`, `launch_helpers.py`).
+- **Experiment workflow helpers** at
+  `${CLAUDE_PLUGIN_ROOT}/skills/wandb-driven-dev/scripts/` (`wdd_helpers.py`).
 - **Reference docs** at `${CLAUDE_PLUGIN_ROOT}/skills/wbagent/references/`
   (`WANDB_CONCEPTS.md`, `WANDB_SDK.md`, `WEAVE_SDK.md`). Read them when you
   need API surface details — don't guess.
@@ -27,9 +29,13 @@ Standard import preamble:
 ```python
 import sys, os
 sys.path.insert(0, f"{os.environ['CLAUDE_PLUGIN_ROOT']}/skills/wbagent/scripts")
+sys.path.insert(0, f"{os.environ['CLAUDE_PLUGIN_ROOT']}/skills/wandb-driven-dev/scripts")
 from wandb_helpers import (
     get_api, probe_project, fetch_runs, runs_to_dataframe, diagnose_run,
-    compare_configs, scan_history, find_runs_by_config, verify_required_metrics,
+    compare_configs, scan_history,
+)
+from wdd_helpers import (
+    find_runs_by_config, verify_required_metrics,
     find_run_by_name, runtime_estimate,
 )
 ```
