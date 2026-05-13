@@ -37,6 +37,23 @@ metrics:
   decision: []
   # Keys watched for divergence / NaN during smoke and review.
   health: []
+
+curves:
+  # W&B's built-in history x-axis. Keep this default unless the project has a
+  # better semantic step key for specific metrics.
+  default_step_key: _step
+  # Exact metric keys and namespace wildcards are supported.
+  # Examples:
+  #   train/*: train/global_step
+  #   val/*: train/global_step
+  #   stage_4e/*: stage_4e/epoch
+  metric_step_keys: {}
+  # Extra keys for setup_project.py discovery to consider.
+  candidate_step_keys: [_step]
+
+# Project-level W&B metadata discovered during setup.
+# This stores keys and decisions only, never run summaries or metric values.
+wandb_metadata: {}
 ---
 
 # Project notes

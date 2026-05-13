@@ -32,7 +32,8 @@ sys.path.insert(0, f"{os.environ['CLAUDE_PLUGIN_ROOT']}/skills/wbagent/scripts")
 sys.path.insert(0, f"{os.environ['CLAUDE_PLUGIN_ROOT']}/skills/wandb-driven-dev/scripts")
 from wandb_helpers import (
     get_api, probe_project, fetch_runs, runs_to_dataframe, diagnose_run,
-    compare_configs, scan_history,
+    fetch_run_summaries, count_runs, compare_configs, scan_history,
+    scan_history_until_step, compare_runs_at_step,
 )
 from wdd_helpers import (
     find_runs_by_config, verify_required_metrics,

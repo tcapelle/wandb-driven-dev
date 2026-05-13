@@ -25,15 +25,22 @@ Usage (in sandbox):
     from wandb_helpers import (
         get_api,             # Create API with large-project-safe timeout
         probe_project,       # Discover project scale, metrics, config keys, artifacts
+        fetch_runs,          # Fast selected-summary GraphQL run fetch
+        fetch_run_summaries, # Fast selected/full summary fetch by run id
+        count_runs,          # Exact lazy server-side run count
         runs_to_dataframe,   # Convert runs to a clean pandas DataFrame
         diagnose_run,        # Quick diagnostic summary of a training run
         compare_configs,     # Side-by-side config diff between two runs
         scan_history,        # Smart history scan (beta_scan_history for large runs)
+        scan_history_until_step,  # Bounded scan that stops after a target step
     )
 """
 
 from __future__ import annotations
 
+import json
+import re
+from collections import defaultdict
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -229,6 +236,106 @@ def scan_history(
 # Fast run fetcher (direct GraphQL with field selection)
 # ---------------------------------------------------------------------------
 
+def _parse_scalar(value: str) -> Any:
+    value = value.strip()
+    if value in {"true", "false"}:
+        return value == "true"
+    if value in {"null", "none", "None"}:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    if (value.startswith("[") and value.endswith("]")) or (
+        value.startswith("{") and value.endswith("}")
+    ):
+        return json.loads(value)
+    return value
+
+
+def parse_filter_expr(expr: str) -> tuple[str, Any]:
+    """Parse `key=value`, `key<value`, `key<=value`, `key>value`, or `key>=value`."""
+    match = re.match(r"^([^<>=!]+?)\s*(<=|>=|=|<|>)\s*(.+)$", expr)
+    if not match:
+        raise ValueError(f"Invalid filter expression: {expr!r}")
+    key, op, raw_value = match.groups()
+    key = key.strip()
+    value = _parse_scalar(raw_value)
+    if op == "=":
+        return key, value
+    op_map = {"<": "$lt", "<=": "$lte", ">": "$gt", ">=": "$gte"}
+    return key, {op_map[op]: value}
+
+
+def build_filters(
+    filters: list[str] | None = None,
+    filters_json: str | None = None,
+    default_state: str | None = "finished",
+) -> dict[str, Any]:
+    """Build a W&B filter dict from CLI-friendly expressions."""
+    out: dict[str, Any] = {}
+    if default_state:
+        out["state"] = default_state
+    if filters_json:
+        out.update(json.loads(filters_json))
+    for expr in filters or []:
+        key, value = parse_filter_expr(expr)
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = {**out[key], **value}
+        else:
+            out[key] = value
+    return out
+
+
+def _unwrap_config(config: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in config.items():
+        if isinstance(value, dict) and "value" in value:
+            out[key] = value["value"]
+        else:
+            out[key] = value
+    return out
+
+
+def nested_get(data: dict[str, Any], key: str) -> Any:
+    """Read a dict key, supporting both flat keys and dotted nested paths."""
+    if key in data:
+        return data[key]
+    cur: Any = data
+    for part in key.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+_nested_get = nested_get
+
+
+def _post_graphql(api: Any, query: str, variables: dict[str, Any]) -> dict[str, Any]:
+    import requests
+
+    response = requests.post(
+        "https://api.wandb.ai/graphql",
+        auth=("api", api.api_key),
+        headers={"Content-Type": "application/json"},
+        json={"query": query, "variables": variables},
+        timeout=getattr(api, "_timeout", 120),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if "errors" in payload:
+        raise RuntimeError(f"GraphQL errors: {payload['errors']}")
+    project = payload.get("data", {}).get("project")
+    if project is None:
+        raise RuntimeError("GraphQL returned project=null; check project path and credentials")
+    return payload
+
+
 _RUNS_QUERY = """\
 query Runs($project: String!, $entity: String!, $cursor: String,
            $perPage: Int!, $order: String, $filters: JSONString) {
@@ -240,8 +347,35 @@ query Runs($project: String!, $entity: String!, $cursor: String,
                     name
                     state
                     createdAt
+                    displayName
                     summaryMetrics(keys: %KEYS%)
                     config
+                }
+                cursor
+            }
+            pageInfo {
+                endCursor
+                hasNextPage
+            }
+        }
+    }
+}
+"""
+
+
+_RUN_SUMMARIES_QUERY = """\
+query Runs($project: String!, $entity: String!, $cursor: String,
+           $perPage: Int!, $order: String, $filters: JSONString) {
+    project(name: $project, entityName: $entity) {
+        runs(filters: $filters, after: $cursor, first: $perPage, order: $order) {
+            edges {
+                node {
+                    id
+                    name
+                    state
+                    createdAt
+                    displayName
+                    %SUMMARY_METRICS%
                 }
                 cursor
             }
@@ -258,7 +392,7 @@ query Runs($project: String!, $entity: String!, $cursor: String,
 def fetch_runs(
     api: Any,
     path: str,
-    metric_keys: list[str],
+    metric_keys: list[str] | None = None,
     limit: int = 200,
     filters: dict[str, Any] | None = None,
     order: str = "-created_at",
@@ -280,7 +414,7 @@ def fetch_runs(
     Args:
         api: wandb.Api instance (use get_api()).
         path: "entity/project" string.
-        metric_keys: Summary metric keys to fetch. REQUIRED.
+        metric_keys: Summary metric keys to fetch. None or empty skips summaryMetrics.
         limit: Max runs to return.
         filters: W&B filter dict (e.g., {"state": "finished"}).
         order: Sort order (e.g., "-created_at", "+summary_metrics.loss").
@@ -290,21 +424,20 @@ def fetch_runs(
     Returns:
         List of flat dicts with run metadata + selected metrics + selected config.
     """
-    import json as _json
-
-    import requests
-
     entity, project = path.split("/", 1)
+    metric_keys = metric_keys or []
 
     # Build the query with specific metric keys
-    keys_json = _json.dumps(metric_keys)
-    query = _RUNS_QUERY.replace("%KEYS%", keys_json)
+    if metric_keys:
+        query = _RUNS_QUERY.replace("%KEYS%", json.dumps(metric_keys))
+    else:
+        query = _RUNS_QUERY.replace("                    summaryMetrics(keys: %KEYS%)\n", "")
 
     # If we don't need config, remove it from the query to save bandwidth
     if config_keys is None:
         query = query.replace("                    config\n", "")
 
-    filter_str = _json.dumps(filters or {})
+    filter_str = json.dumps(filters or {})
 
     rows: list[dict[str, Any]] = []
     cursor = None
@@ -322,45 +455,28 @@ def fetch_runs(
         if cursor:
             variables["cursor"] = cursor
 
-        resp = requests.post(
-            "https://api.wandb.ai/graphql",
-            headers={
-                "Authorization": f"Bearer {api.api_key}",
-                "Content-Type": "application/json",
-            },
-            json={"query": query, "variables": variables},
-            timeout=getattr(api, "_timeout", 60),
-        )
-        resp.raise_for_status()
-        data = resp.json()
-
-        if "errors" in data:
-            raise RuntimeError(f"GraphQL errors: {data['errors']}")
-
+        data = _post_graphql(api, query, variables)
         runs_data = data.get("data", {}).get("project", {}).get("runs", {})
         edges = runs_data.get("edges", [])
         page_info = runs_data.get("pageInfo", {})
 
         for edge in edges:
             node = edge["node"]
-            summary = _json.loads(node.get("summaryMetrics") or "{}")
+            summary = json.loads(node.get("summaryMetrics") or "{}")
 
             row: dict[str, Any] = {
                 "id": node["id"],
                 "name": node["name"],
+                "display_name": node.get("displayName"),
                 "state": node["state"],
                 "created_at": node["createdAt"],
             }
 
             # Config — selective
             if config_keys is not None:
-                config = _json.loads(node.get("config") or "{}")
+                config = _unwrap_config(json.loads(node.get("config") or "{}"))
                 for k in config_keys:
-                    row[f"config.{k}"] = (
-                        config.get(k, {}).get("value")
-                        if isinstance(config.get(k), dict)
-                        else config.get(k)
-                    )
+                    row[f"config.{k}"] = _nested_get(config, k)
 
             # Summary metrics — already filtered server-side
             for key in metric_keys:
@@ -374,6 +490,215 @@ def fetch_runs(
         cursor = page_info.get("endCursor")
 
     return rows[:limit]
+
+
+def fetch_run_summaries(
+    api: Any,
+    path: str,
+    run_ids: list[str],
+    summary_keys: list[str] | None = None,
+    order: str = "-created_at",
+    per_page: int = 50,
+) -> list[dict[str, Any]]:
+    """Fetch selected runs with summary metrics via GraphQL.
+
+    `summary_keys=None` requests the full run summary. Use this for small sets
+    of representative runs when discovering project-level metadata; pass
+    explicit keys for very wide projects.
+    """
+    if not run_ids:
+        return []
+
+    entity, project = path.split("/", 1)
+    summary_clause = (
+        "summaryMetrics"
+        if summary_keys is None
+        else f"summaryMetrics(keys: {json.dumps(summary_keys)})"
+    )
+    query = _RUN_SUMMARIES_QUERY.replace("%SUMMARY_METRICS%", summary_clause)
+    limit = len(run_ids)
+    rows: list[dict[str, Any]] = []
+    cursor = None
+    remaining = limit
+    while remaining > 0:
+        page_size = min(per_page, remaining)
+        variables: dict[str, Any] = {
+            "project": project,
+            "entity": entity,
+            "perPage": page_size,
+            "order": order,
+            "filters": json.dumps({"name": {"$in": run_ids}}),
+        }
+        if cursor:
+            variables["cursor"] = cursor
+
+        payload = _post_graphql(api, query, variables)
+        runs_data = payload["data"]["project"]["runs"]
+        edges = runs_data.get("edges", [])
+        for edge in edges:
+            node = edge["node"]
+            rows.append(
+                {
+                    "id": node["id"],
+                    "name": node["name"],
+                    "display_name": node.get("displayName"),
+                    "state": node["state"],
+                    "created_at": node["createdAt"],
+                    "summary": json.loads(node.get("summaryMetrics") or "{}"),
+                }
+            )
+
+        remaining -= len(edges)
+        if not edges or not runs_data.get("pageInfo", {}).get("hasNextPage"):
+            break
+        cursor = runs_data.get("pageInfo", {}).get("endCursor")
+
+    by_name = {row["name"]: row for row in rows}
+    return [by_name[run_id] for run_id in run_ids if run_id in by_name]
+
+
+def count_runs(
+    api: Any,
+    path: str,
+    filters: dict[str, Any] | None = None,
+    include_sweeps: bool = False,
+) -> int:
+    """Exact server-side run count. Does not materialize runs."""
+    return len(
+        api.runs(
+            path,
+            filters=filters or {},
+            per_page=1,
+            include_sweeps=include_sweeps,
+            lazy=True,
+        )
+    )
+
+
+def scan_history_until_step(
+    run: Any,
+    keys: list[str],
+    step_key: str,
+    target_step: int | float,
+    max_rows: int | None = None,
+    use_beta: bool | None = None,
+) -> list[dict[str, Any]]:
+    """Scan selected history keys until `step_key` passes `target_step`.
+
+    W&B history rows are ordered by `_step`; most training step counters are
+    monotonic. Stopping after the first row beyond the target keeps at-step
+    comparisons bounded while preserving the large-history beta-scan behavior
+    used by `scan_history()`.
+    """
+    if not keys:
+        raise ValueError(
+            "keys is required — never scan without explicit keys on large projects"
+        )
+
+    if use_beta is None:
+        total_steps = getattr(run, "lastHistoryStep", -1)
+        use_beta = total_steps >= 10_000
+
+    if use_beta and hasattr(run, "beta_scan_history"):
+        scanner = run.beta_scan_history(
+            keys=keys,
+            page_size=min(max_rows or 10_000, 10_000),
+        )
+    else:
+        scanner = run.scan_history(keys=keys)
+
+    rows: list[dict[str, Any]] = []
+    for raw_row in scanner:
+        row = dict(raw_row)
+        step_value = row.get(step_key)
+        if isinstance(step_value, (int, float)) and step_value > target_step:
+            break
+        rows.append(row)
+        if max_rows is not None and len(rows) >= max_rows:
+            break
+    return rows
+
+
+def _metric_group(metric: str) -> str:
+    return metric.split("/", 1)[0] if "/" in metric else metric
+
+
+def latest_at_or_before(
+    rows: list[dict[str, Any]],
+    step_key: str,
+    metric: str,
+    step: int | float,
+) -> dict[str, Any] | None:
+    """Return the latest row with a metric value at or before a target step."""
+    candidates = [
+        row
+        for row in rows
+        if row.get(step_key) is not None
+        and row[step_key] <= step
+        and row.get(metric) is not None
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda row: row[step_key])
+
+
+def compare_runs_at_step(
+    api: Any,
+    path: str,
+    run_ids: list[str],
+    step: int | float,
+    metrics: list[str],
+    step_key: str = "_step",
+    max_rows: int | None = None,
+) -> dict[str, Any]:
+    """Compare selected history metrics at the latest logged step <= target step.
+
+    W&B history scans require all requested keys to be present in a row. Training
+    and validation metrics often log on different cadences, so metrics are
+    grouped by namespace and retried one-by-one only when a grouped scan misses.
+    """
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for metric in metrics:
+        grouped[_metric_group(metric)].append(metric)
+
+    comparison: dict[str, Any] = {}
+    for run_id in run_ids:
+        run = api.run(f"{path}/{run_id}")
+        run_result: dict[str, Any] = {
+            "display_name": getattr(run, "display_name", None) or getattr(run, "name", None),
+            "target_step": step,
+            "metrics": {},
+        }
+        for group_metrics in grouped.values():
+            keys = list(dict.fromkeys(["_step", step_key, *group_metrics]))
+            rows = scan_history_until_step(run, keys, step_key, step, max_rows=max_rows)
+            for metric in group_metrics:
+                row = latest_at_or_before(rows, step_key, metric, step)
+                if row is None and len(group_metrics) > 1:
+                    rows_single = scan_history_until_step(
+                        run,
+                        keys=list(dict.fromkeys(["_step", step_key, metric])),
+                        step_key=step_key,
+                        target_step=step,
+                        max_rows=max_rows,
+                    )
+                    row = latest_at_or_before(rows_single, step_key, metric, step)
+                run_result["metrics"][metric] = (
+                    None
+                    if row is None
+                    else {
+                        "value": row[metric],
+                        step_key: row[step_key],
+                        "_step": row.get("_step"),
+                    }
+                )
+        comparison[run_id] = run_result
+    return comparison
+
+
+# Compatibility aliases for downstream scripts that used the WDD wrapper names.
+fast_fetch_runs = fetch_runs
+fast_fetch_run_summaries = fetch_run_summaries
 
 
 # ---------------------------------------------------------------------------

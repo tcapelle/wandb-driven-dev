@@ -23,13 +23,27 @@ If invoked as `setup` (or `reconfigure`), run **Phase 0a** to interview the user
 
 ## Project config
 
-`.claude/wandb-driven-dev.local.md` holds the per-project preferences gathered once and reused for every experiment. The file is YAML frontmatter (structured fields: wandb project, launcher command, default metrics, GPU counts, training entrypoint) followed by a markdown body with free-form project notes the agents read verbatim. Schema lives in `scripts/wdd_helpers.py:default_config`. Read it first thing on every invocation:
+`.claude/wandb-driven-dev.local.md` holds the per-project preferences gathered once and reused for every experiment. The file is YAML frontmatter (structured fields: wandb project, launcher command, default metrics, GPU counts, training entrypoint, curve step keys, and W&B project metadata) followed by a markdown body with free-form project notes the agents read verbatim. Schema lives in `scripts/wdd_helpers.py:default_config`. Read it first thing on every invocation:
 
 ```python
 import sys, os
 sys.path.insert(0, f"{os.environ['CLAUDE_PLUGIN_ROOT']}/skills/wandb-driven-dev/scripts")
-from wdd_helpers import read_config
-cfg = read_config()  # None if not yet configured
+from wdd_helpers import read_config, curve_step_keys
+read_config()  # None if not yet configured
+```
+
+W&B always has `_step`; keep that as the generic default. If a project logs
+semantic step metrics, persist them under `curves`. `curve_analysis.py compare`
+reads these mappings automatically; pass an explicit `--step-key` only for
+one-off at-step/debug commands.
+
+```yaml
+curves:
+  default_step_key: _step
+  metric_step_keys:
+    train/*: train/global_step
+    val/*: train/global_step
+  candidate_step_keys: [_step, train/global_step]
 ```
 
 ## Wandb querying delegated to wbagent
@@ -43,7 +57,8 @@ import sys, os
 sys.path.insert(0, f"{os.environ['CLAUDE_PLUGIN_ROOT']}/skills/wbagent/scripts")
 sys.path.insert(0, f"{os.environ['CLAUDE_PLUGIN_ROOT']}/skills/wandb-driven-dev/scripts")
 from wandb_helpers import (
-    get_api, fetch_runs, compare_configs, scan_history,
+    get_api, build_filters, fetch_runs, fetch_run_summaries, count_runs,
+    compare_configs, scan_history, scan_history_until_step, compare_runs_at_step,
 )
 from wdd_helpers import (
     find_runs_by_config, verify_required_metrics,
@@ -52,6 +67,116 @@ from wdd_helpers import (
 ```
 
 wandb-driven-dev helpers (config IO and experiment report construction) live in `scripts/wdd_helpers.py`.
+
+## Fast hardcoded W&B queries
+
+For recurring query shapes, use `scripts/fast_wandb_query.py` instead of writing
+one-off Python. It prints JSON with a `latency_s` field and keeps the query
+bounded:
+
+```bash
+# Exact count, server-side, no run materialization
+uv run python ${CLAUDE_PLUGIN_ROOT}/skills/wandb-driven-dev/scripts/fast_wandb_query.py \
+  count milieu/drivaerml \
+  --filter 'summary_metrics.train/global_step=100000'
+
+# Top-k run lookup with selected summary/config fields
+uv run python ${CLAUDE_PLUGIN_ROOT}/skills/wandb-driven-dev/scripts/fast_wandb_query.py \
+  top milieu/drivaerml \
+  --metric val/surface_rel_l2 \
+  --filter 'config.model.model_class=abupt' \
+  --filter 'config.max_steps=20000' \
+  --config max_steps,model \
+  --summary train/global_step \
+  --limit 2
+
+# Compare a few pinned runs at the latest logged step <= target step.
+# Metrics are grouped by namespace so train/val cadence differences do not
+# produce empty history scans.
+uv run python ${CLAUDE_PLUGIN_ROOT}/skills/wandb-driven-dev/scripts/fast_wandb_query.py \
+  compare-step milieu/drivaerml \
+  --runs srehoxzc,bo2blqjb \
+  --step 15305 \
+  --step-key train/global_step \
+  --metrics train/loss,val/surface_rel_l2,val/volume_rel_l2,val/u_rel_l2,val/loss
+```
+
+Use this before delegating to `wandb-query` for: "best run matching filters",
+"how many runs match X", and "compare these runs at step N". Delegate only when
+the question needs broader interpretation after the hardcoded query returns.
+
+## Curve analysis primitives
+
+When the human question is really "what does the plot say?", use
+`scripts/curve_analysis.py` instead of eyeballing W&B charts or dumping full
+history. It fetches only selected runs/metrics, converts rows to pandas frames,
+and returns curve characteristics: value at target steps, local slope, percent
+movement over the slope window, trend, best run by value, and best run by slope.
+Slope/trend are noise-aware: by default the script uses a trailing rolling
+median over 5 logged points, fits a line across the selected window, and reports
+`noise_std`, `noise_to_signal`, and `trend_confidence`.
+
+Curve questions must choose a training stage:
+
+- `--stage early`: launch/smoke monitoring. Checks that the metric has enough
+  points, starts moving in the right direction, has acceptable directional
+  consistency, and does not show bad-direction spikes.
+- `--stage progress`: mid/late training comparison. Uses local slope,
+  slope-shift versus the previous window, spike detection, and noise/confidence
+  fields to decide whether a run is improving, plateauing, or regressing.
+- `--stage auto`: uses `--early-step-threshold` to route small target steps to
+  early checks and later target steps to progress checks.
+
+```bash
+uv run python ${CLAUDE_PLUGIN_ROOT}/skills/wandb-driven-dev/scripts/setup_project.py
+```
+
+Step-key discovery is setup-time work and must go through
+`scripts/setup_project.py`, not `curve_analysis.py`. That script reads the
+local config, uses configured decision/health metrics, samples a few recent
+finished runs when explicit run IDs are not supplied, then writes `curves` and
+`wandb_metadata.preflight`. Store keys and decisions only; do not persist run
+summaries or metric values in the local config.
+
+If summary coverage is ambiguous, rerun setup discovery with
+`--validate-history`; that slower path follows `wbagent` large-project rules by
+using `get_api(timeout=120)`, explicit `scan_history(keys=...)`, bounded
+`--max-rows`, and targeted metric+candidate scans only when sparse metrics need
+coverage confirmation. Do not write ad hoc `run.history()` or all-candidate
+history loops for step-key discovery.
+
+`curve_analysis.py compare` is intentionally config-driven. In the normal path,
+do not pass project, step key, smoothing, worker, or window arguments; setup
+already stored the project and metric step-key mapping. The script groups
+metrics by configured step key internally.
+
+```bash
+uv run python ${CLAUDE_PLUGIN_ROOT}/skills/wandb-driven-dev/scripts/curve_analysis.py \
+  compare \
+  --runs srehoxzc,bo2blqjb \
+  --metrics train/loss,val/surface_rel_l2,val/volume_rel_l2,val/u_rel_l2,val/loss \
+  --steps 15305
+```
+
+Use this for review/kill decisions such as "is this run going bad?", "which run
+is improving faster?", and "which validation curve is better at this budget?".
+The script uses latest logged point at or before each requested step; this
+handles train/validation metrics that log on different cadences.
+
+For 2-3 curves, this should return in a few seconds on normal W&B latency. For
+larger comparisons, the implementation supports up to ~20 selected curves by
+fetching runs in parallel with separate W&B API clients per worker.
+
+When curves are noisy, prefer `smoothed_value` and `trend_confidence` for kill
+or keep-going decisions. Treat a `low` confidence worsening slope as "watch
+longer / inspect more context" unless the raw value is already outside the
+falsifier threshold.
+
+For just-launched runs, use `stage_analysis[*].status` from the early stage
+instead of ranking by raw value; a brand-new run can be "healthy" before it is
+competitive. For mature comparisons, use the progress stage fields
+`current.slope_per_1k`, `effective_slope_shift_per_1k`, and
+`spikes.bad_spike_count` alongside the best-run ranking.
 
 ## Reports
 
@@ -106,7 +231,16 @@ Skip if `.claude/wandb-driven-dev.local.md` exists. Otherwise interview the user
    ```
    If the project has zero finished runs, surface that — usually a typo'd slug.
 7. **Health metrics** — keys watched for divergence/NaN.
-8. **Project notes (optional)** — anything you'd want future-you to know that doesn't fit the schema (dataset quirks, known-good baseline IDs, launcher gotchas). Goes into the markdown body of `.local.md`.
+8. **Curve step keys** — default to `_step`; if the project logs semantic
+   steps such as `train/global_step` or `stage_4e/epoch`, run setup discovery
+   after decision/health metrics are known:
+   ```bash
+   uv run python ${CLAUDE_PLUGIN_ROOT}/skills/wandb-driven-dev/scripts/setup_project.py
+   ```
+   This reads `.claude/wandb-driven-dev.local.md`, samples recent finished runs,
+   pulls selected summaries, and writes stable mappings under
+   `curves.metric_step_keys` plus metadata under `wandb_metadata.preflight`.
+9. **Project notes (optional)** — anything you'd want future-you to know that doesn't fit the schema (dataset quirks, known-good baseline IDs, launcher gotchas). Goes into the markdown body of `.local.md`.
 
 Write with `wdd_helpers.write_config(cfg, notes=...)` and confirm the file path back to the user.
 

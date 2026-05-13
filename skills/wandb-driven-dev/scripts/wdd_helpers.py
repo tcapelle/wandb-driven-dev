@@ -45,6 +45,14 @@ def default_config() -> dict[str, Any]:
             "decision": [],
             "health": [],
         },
+        "curves": {
+            # W&B always has `_step`; projects can override with custom step
+            # metrics such as `train/global_step` or `stage_4e/epoch`.
+            "default_step_key": "_step",
+            "metric_step_keys": {},
+            "candidate_step_keys": ["_step"],
+        },
+        "wandb_metadata": {},
     }
 
 
@@ -99,6 +107,7 @@ def write_config(
     """
     import yaml
 
+    cfg = dict(cfg)
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -110,12 +119,130 @@ def write_config(
     p.write_text(contents)
 
 
+def _unique_list(values: list[Any]) -> list[Any]:
+    out: list[Any] = []
+    for value in values:
+        if value not in out:
+            out.append(value)
+    return out
+
+
+def merge_curve_config(cfg: dict[str, Any], curves: dict[str, Any]) -> dict[str, Any]:
+    """Merge discovered curve settings into an existing project config."""
+    default_curves = default_config()["curves"]
+    existing = cfg.get("curves") or {}
+    merged = {
+        "default_step_key": existing.get("default_step_key") or default_curves["default_step_key"],
+        "metric_step_keys": dict(existing.get("metric_step_keys") or {}),
+        "candidate_step_keys": list(existing.get("candidate_step_keys") or default_curves["candidate_step_keys"]),
+    }
+
+    if curves.get("default_step_key"):
+        merged["default_step_key"] = curves["default_step_key"]
+    if curves.get("metric_step_keys"):
+        merged["metric_step_keys"].update(curves["metric_step_keys"])
+    if curves.get("candidate_step_keys"):
+        merged["candidate_step_keys"] = _unique_list(
+            [*merged["candidate_step_keys"], *curves["candidate_step_keys"]]
+        )
+
+    cfg["curves"] = merged
+    return cfg
+
+
+def merge_wandb_metadata(cfg: dict[str, Any], wandb_metadata: dict[str, Any]) -> dict[str, Any]:
+    """Merge W&B discovery metadata sections into an existing project config."""
+    existing = dict(cfg.get("wandb_metadata") or {})
+    for key, value in (wandb_metadata or {}).items():
+        existing[key] = value
+    cfg["wandb_metadata"] = existing
+    return cfg
+
+
+def update_preflight_config(
+    config_patch: dict[str, Any],
+    project: str | None = None,
+    path: Path | str = CONFIG_PATH,
+    create_if_missing: bool = False,
+) -> dict[str, Any]:
+    """Persist preflight settings/metadata into `.claude/wandb-driven-dev.local.md`.
+
+    By default the config must already exist; setup discovery should enrich the
+    project file created by the setup interview, not silently create an
+    incomplete default. If a config exists for a different project, raise
+    instead of silently writing project-specific discoveries into the wrong
+    file.
+    """
+    cfg = read_config(path)
+    if cfg is None:
+        if not create_if_missing:
+            raise FileNotFoundError(
+                f"{path} is missing; run setup and write the project config before preflight"
+            )
+        cfg = default_config()
+        if project:
+            cfg["wandb_project"] = project
+
+    existing_project = cfg.get("wandb_project")
+    if project and existing_project and existing_project != project:
+        raise ValueError(
+            f"Config project mismatch: {path} has {existing_project!r}, got {project!r}"
+        )
+
+    notes = cfg.get("_notes", "")
+    if config_patch.get("curves"):
+        cfg = merge_curve_config(cfg, config_patch["curves"])
+    if config_patch.get("wandb_metadata"):
+        cfg = merge_wandb_metadata(cfg, config_patch["wandb_metadata"])
+    write_config(cfg, notes=notes, path=path)
+    loaded = read_config(path)
+    if loaded is None:
+        raise RuntimeError(f"Failed to write config to {path}")
+    return loaded
+
+
+def update_curve_config(
+    curves: dict[str, Any],
+    project: str | None = None,
+    path: Path | str = CONFIG_PATH,
+    wandb_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persist discovered curve settings into `.claude/wandb-driven-dev.local.md`."""
+    patch: dict[str, Any] = {"curves": curves}
+    if wandb_metadata:
+        patch["wandb_metadata"] = wandb_metadata
+    return update_preflight_config(patch, project=project, path=path)
+
+
+def curve_step_key(cfg: dict[str, Any] | None, metric: str) -> str:
+    """Return the configured step key for a metric, defaulting to W&B `_step`.
+
+    `curves.metric_step_keys` supports exact metric keys and namespace wildcards
+    like `train/*` or `stage_4e/*`.
+    """
+    curves = (cfg or {}).get("curves") or {}
+    metric_step_keys = curves.get("metric_step_keys") or {}
+    if metric in metric_step_keys:
+        return metric_step_keys[metric]
+    if "/" in metric:
+        namespace = metric.split("/", 1)[0]
+        wildcard = f"{namespace}/*"
+        if wildcard in metric_step_keys:
+            return metric_step_keys[wildcard]
+    return curves.get("default_step_key") or "_step"
+
+
+def curve_step_keys(cfg: dict[str, Any] | None, metrics: list[str]) -> dict[str, str]:
+    """Return configured step keys for a list of curve metrics."""
+    return {metric: curve_step_key(cfg, metric) for metric in metrics}
+
+
 # ---------------------------------------------------------------------------
 # Experiment gate helpers
 # ---------------------------------------------------------------------------
 
-def _load_fetch_runs() -> Any:
-    """Import upstream wbagent's `fetch_runs` without requiring caller sys.path setup."""
+def _load_fast_fetch_runs() -> Any:
+    """Import wbagent's bounded GraphQL fetcher without caller setup."""
     import sys
 
     scripts_dir = Path(__file__).resolve().parent.parent.parent / "wbagent" / "scripts"
@@ -128,7 +255,7 @@ def _load_fetch_runs() -> Any:
 
 
 def _load_scan_history() -> Any:
-    """Import upstream wbagent's `scan_history` without requiring caller sys.path setup."""
+    """Import wbagent's `scan_history` without requiring caller sys.path setup."""
     import sys
 
     scripts_dir = Path(__file__).resolve().parent.parent.parent / "wbagent" / "scripts"
@@ -138,19 +265,6 @@ def _load_scan_history() -> Any:
     from wandb_helpers import scan_history
 
     return scan_history
-
-
-def _config_get(config: dict[str, Any], key: str) -> Any:
-    """Read a W&B config key, supporting both flat and dotted nested forms."""
-    if key in config:
-        return config[key]
-
-    cur: Any = config
-    for part in key.split("."):
-        if not isinstance(cur, dict) or part not in cur:
-            return None
-        cur = cur[part]
-    return cur
 
 
 def find_runs_by_config(
@@ -164,10 +278,11 @@ def find_runs_by_config(
 ) -> list[dict[str, Any]]:
     """Find runs matching exact or operator-based config values.
 
-    Wrapper around upstream `fetch_runs` that prefixes config keys with
-    `config.` and includes the filtered config keys in the output rows.
+    Wrapper around WDD's bounded GraphQL fetcher. It prefixes config filters,
+    requests only selected summary/config fields, and supports dotted nested
+    config output such as `config.model.depth`.
     """
-    fetch_runs = _load_fetch_runs()
+    fast_fetch_runs = _load_fast_fetch_runs()
 
     filters: dict[str, Any] = {}
     for k, v in config_filters.items():
@@ -179,7 +294,7 @@ def find_runs_by_config(
     if extra_config_keys:
         config_keys.extend(k for k in extra_config_keys if k not in config_keys)
 
-    rows = fetch_runs(
+    return fast_fetch_runs(
         api,
         project,
         metric_keys=metric_keys or [],
@@ -187,31 +302,6 @@ def find_runs_by_config(
         filters=filters,
         limit=limit,
     )
-
-    dotted_keys = [key for key in config_keys if "." in key]
-    if not dotted_keys:
-        return rows
-
-    run_ids = [row.get("name") for row in rows if row.get("name")]
-    if not run_ids:
-        return rows
-
-    runs_by_id = {
-        run.id: run
-        for run in api.runs(
-            project,
-            filters={"name": {"$in": run_ids}},
-            per_page=min(len(run_ids), 1000),
-            include_sweeps=False,
-        )[: len(run_ids)]
-    }
-    for row in rows:
-        run = runs_by_id.get(row.get("name"))
-        if not run:
-            continue
-        for key in dotted_keys:
-            row[f"config.{key}"] = _config_get(run.config, key)
-    return rows
 
 
 def verify_required_metrics(

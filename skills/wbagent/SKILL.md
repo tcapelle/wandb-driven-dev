@@ -16,6 +16,30 @@ description: "Primary skill for querying, analyzing, launching, and creating sig
 
 These cover the most common tasks. Each is a single script. Copy, fill in placeholders, run.
 
+### Reusable W&B query helpers
+
+For repeated run-table, summary, count, and bounded-history work, use
+`scripts/wandb_helpers.py` instead of writing ad hoc SDK loops:
+
+```python
+import sys
+sys.path.insert(0, "skills/wbagent/scripts")
+from wandb_helpers import (
+    get_api,
+    build_filters,
+    fetch_runs,
+    fetch_run_summaries,
+    count_runs,
+    scan_history,
+    scan_history_until_step,
+    compare_runs_at_step,
+)
+```
+
+Prefer these helpers for selected `summaryMetrics(keys=...)`, exact lazy counts,
+dotted config reads, and at-step history comparisons. Keep downstream skills as
+workflow wrappers over these primitives rather than duplicating GraphQL code.
+
 ## Fast product/API answers
 
 For small W&B product or API questions, answer directly from this section. Do not run
