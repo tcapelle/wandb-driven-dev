@@ -39,28 +39,25 @@ pointing at it directly:
 cc --plugin-dir /path/to/wandb-driven-dev
 ```
 
-`wbagent` is sourced from the upstream W&B core repository at
+`wbagent` is vendored directly into `skills/wbagent/` as plain files, copied
+from the upstream W&B core repository at
 `services/wb_agent/src/agent_repository/context_content/production/wbagent/skills/wbagent`.
-This repo keeps `wandb/core` as a sparse submodule under `vendor/wandb-core`
-and exposes the skill with `skills/wbagent` as a symlink.
-
-After cloning this plugin, initialize only the upstream `wbagent` path:
-
-```bash
-scripts/init-wbagent-submodule.sh
-```
+The upstream commit the files were synced from is recorded in
+`skills/wbagent/.upstream-commit`.
 
 `wbagent` updates regularly upstream. To manually pull the latest version from
-`wandb/core` later:
+`wandb/core`:
 
 ```bash
-scripts/update-wbagent-submodule.sh
-git add vendor/wandb-core
+scripts/update-wbagent.sh
+git diff -- skills/wbagent      # review the change
+git add skills/wbagent          # stage when you're happy
 ```
 
-This intentionally advances only the pinned submodule commit. The plugin keeps
-using the previous `wbagent` until you stage and commit the updated
-`vendor/wandb-core` gitlink.
+The script does a shallow sparse clone of `wandb/core`, mirrors the upstream
+skill directory into `skills/wbagent/`, and refreshes `.upstream-commit`. The
+plugin keeps using the previously committed `wbagent` until you stage and commit
+the new files.
 
 ## Quick start
 
@@ -126,11 +123,11 @@ wandb-driven-dev/
 │   ├── wandb-driven-dev/
 │   │   ├── SKILL.md
 │   │   └── scripts/{wdd_helpers.py, create_report.py, watch_runs.py, bootstrap_experiment.sh}
-│   ├── wbagent/
+│   ├── wbagent/         # vendored copy of upstream wbagent; see .upstream-commit
 │   │   ├── SKILL.md
 │   │   ├── scripts/*.py
 │   │   └── references/*.md
 ├── agents/{wandb-query.md, reviewer.md}
-├── templates/wandb-driven-dev.local.md.template
-└── vendor/wandb-core/  # sparse submodule for upstream wbagent
+├── scripts/update-wbagent.sh  # resync skills/wbagent from wandb/core
+└── templates/wandb-driven-dev.local.md.template
 ```
