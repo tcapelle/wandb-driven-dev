@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FAST_QUERY_PATH = ROOT / "skills" / "wandb-driven-dev" / "scripts" / "fast_wandb_query.py"
+WANDB_HELPERS_PATH = ROOT / "skills" / "wbagent" / "scripts" / "wandb_helpers.py"
 
 PROJECT = "milieu/drivaerml"
 AS_OF_FILTER = {"created_at": {"$lt": "2026-05-08"}}
@@ -63,15 +63,15 @@ LATENCY_BUDGETS_S = {
 }
 
 
-def load_fast_query():
-    spec = importlib.util.spec_from_file_location("fast_wandb_query_under_test", FAST_QUERY_PATH)
+def load_wandb_helpers():
+    spec = importlib.util.spec_from_file_location("wandb_helpers_perf_under_test", WANDB_HELPERS_PATH)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-fast_query = load_fast_query()
+wandb_helpers = load_wandb_helpers()
 
 
 def require_online_wandb():
@@ -111,9 +111,9 @@ class FakeHistoryRun:
         )
 
 
-class FastQueryPureTests(unittest.TestCase):
+class WandbHelpersPerformancePureTests(unittest.TestCase):
     def test_build_filters_parses_scalars_and_merges_ranges(self):
-        filters = fast_query.build_filters(
+        filters = wandb_helpers.build_filters(
             [
                 "config.max_steps=20000",
                 "created_at>=2026-05-01",
@@ -136,7 +136,7 @@ class FastQueryPureTests(unittest.TestCase):
     def test_scan_until_step_stops_after_target_is_passed(self):
         run = FakeHistoryRun()
 
-        rows = fast_query.scan_history_until_step(
+        rows = wandb_helpers.scan_history_until_step(
             run,
             keys=["_step", GLOBAL_STEP, TRAIN_LOSS],
             step_key=GLOBAL_STEP,
@@ -146,7 +146,7 @@ class FastQueryPureTests(unittest.TestCase):
         self.assertEqual(run.calls, [{"keys": ["_step", GLOBAL_STEP, TRAIN_LOSS]}])
         self.assertEqual([row[GLOBAL_STEP] for row in rows], [0, 50])
 
-    def test_fast_fetch_runs_omits_summary_metrics_when_no_metric_keys_requested(self):
+    def test_fetch_runs_omits_summary_metrics_when_no_metric_keys_requested(self):
         captured = {}
 
         def fake_post_graphql(api, query, variables):
@@ -173,12 +173,10 @@ class FastQueryPureTests(unittest.TestCase):
                 }
             }
 
-        import wandb_helpers
-
         with patch.object(wandb_helpers, "_post_graphql", side_effect=fake_post_graphql):
-            rows = fast_query.fast_fetch_runs(
+            rows = wandb_helpers.fetch_runs(
                 api=object(),
-                project_path="entity/project",
+                path="entity/project",
                 metric_keys=[],
                 filters={"state": "finished"},
                 limit=1,
@@ -193,7 +191,7 @@ class DrivaerMlPerformanceReportTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         require_online_wandb()
-        cls.api = fast_query.get_api()
+        cls.api = wandb_helpers.get_api()
 
     def fetch_abupt_20k(self, limit: int) -> list[dict]:
         filters = {
@@ -202,7 +200,7 @@ class DrivaerMlPerformanceReportTests(unittest.TestCase):
             "config.model.model_class": "abupt",
             "config.max_steps": 20_000,
         }
-        return fast_query.fast_fetch_runs(
+        return wandb_helpers.fetch_runs(
             self.api,
             PROJECT,
             metric_keys=[SURFACE_METRIC, VOLUME_METRIC, GLOBAL_STEP],
@@ -232,7 +230,7 @@ class DrivaerMlPerformanceReportTests(unittest.TestCase):
 
     def test_count_100k_step_runs_is_exact_and_fast(self):
         def count_runs():
-            return fast_query.count_runs(
+            return wandb_helpers.count_runs(
                 self.api,
                 PROJECT,
                 filters={
@@ -252,7 +250,7 @@ class DrivaerMlPerformanceReportTests(unittest.TestCase):
 
         def find_and_compare():
             rows = self.fetch_abupt_20k(limit=2)
-            raw = fast_query.compare_runs_at_step(
+            raw = wandb_helpers.compare_runs_at_step(
                 self.api,
                 PROJECT,
                 run_ids=[row["name"] for row in rows],

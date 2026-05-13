@@ -68,42 +68,64 @@ from wdd_helpers import (
 
 wandb-driven-dev helpers (config IO and experiment report construction) live in `scripts/wdd_helpers.py`.
 
-## Fast hardcoded W&B queries
+## W&B query recipes via wbagent
 
-For recurring query shapes, use `scripts/fast_wandb_query.py` instead of writing
-one-off Python. It prints JSON with a `latency_s` field and keeps the query
-bounded:
+For recurring query shapes, use the `wbagent` helper module directly. It keeps
+queries bounded with selected GraphQL fields, lazy counts, and explicit history
+keys:
 
-```bash
-# Exact count, server-side, no run materialization
-uv run python ${CLAUDE_PLUGIN_ROOT}/skills/wandb-driven-dev/scripts/fast_wandb_query.py \
-  count milieu/drivaerml \
-  --filter 'summary_metrics.train/global_step=100000'
+```python
+import os, sys
+sys.path.insert(0, f"{os.environ['CLAUDE_PLUGIN_ROOT']}/skills/wbagent/scripts")
+from wandb_helpers import (
+    get_api, build_filters, fetch_runs, count_runs, compare_runs_at_step,
+)
 
-# Top-k run lookup with selected summary/config fields
-uv run python ${CLAUDE_PLUGIN_ROOT}/skills/wandb-driven-dev/scripts/fast_wandb_query.py \
-  top milieu/drivaerml \
-  --metric val/surface_rel_l2 \
-  --filter 'config.model.model_class=abupt' \
-  --filter 'config.max_steps=20000' \
-  --config max_steps,model \
-  --summary train/global_step \
-  --limit 2
+api = get_api()
+project = "milieu/drivaerml"
 
-# Compare a few pinned runs at the latest logged step <= target step.
-# Metrics are grouped by namespace so train/val cadence differences do not
-# produce empty history scans.
-uv run python ${CLAUDE_PLUGIN_ROOT}/skills/wandb-driven-dev/scripts/fast_wandb_query.py \
-  compare-step milieu/drivaerml \
-  --runs srehoxzc,bo2blqjb \
-  --step 15305 \
-  --step-key train/global_step \
-  --metrics train/loss,val/surface_rel_l2,val/volume_rel_l2,val/u_rel_l2,val/loss
+# Exact count, server-side, no run materialization.
+count = count_runs(
+    api,
+    project,
+    build_filters(["summary_metrics.train/global_step=100000"]),
+)
+
+# Top-k run lookup with selected summary/config fields.
+rows = fetch_runs(
+    api,
+    project,
+    metric_keys=["val/surface_rel_l2", "train/global_step"],
+    filters=build_filters([
+        "config.model.model_class=abupt",
+        "config.max_steps=20000",
+    ]),
+    config_keys=["max_steps", "model"],
+    order="+summary_metrics.val/surface_rel_l2",
+    limit=2,
+)
+
+# Compare pinned runs at the latest logged step <= target step.
+comparison = compare_runs_at_step(
+    api,
+    project,
+    run_ids=["srehoxzc", "bo2blqjb"],
+    step=15305,
+    step_key="train/global_step",
+    metrics=[
+        "train/loss",
+        "val/surface_rel_l2",
+        "val/volume_rel_l2",
+        "val/u_rel_l2",
+        "val/loss",
+    ],
+)
 ```
 
-Use this before delegating to `wandb-query` for: "best run matching filters",
-"how many runs match X", and "compare these runs at step N". Delegate only when
-the question needs broader interpretation after the hardcoded query returns.
+Use these helpers before delegating to `wandb-query` for: "best run matching
+filters", "how many runs match X", and "compare these runs at step N". Delegate
+only when the question needs broader interpretation after the helper query
+returns.
 
 ## Curve analysis primitives
 

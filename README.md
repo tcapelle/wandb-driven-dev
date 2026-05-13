@@ -11,14 +11,13 @@ against, and a falsifier written before the run started. Nothing merges on vibes
 | Skill | Trigger | Purpose |
 |---|---|---|
 | `wandb-driven-dev` | `/wandb-driven-dev` (also auto-triggers on "experiment", "ablation", "is A better than B", and W&B Report requests) | The methodology — Phases 0–6 from setup to cleanup, with config, worktree bootstrap, smoke gates, launch, ETA-aware watcher, review, and experiment report helpers. |
-| `wbagent` | Auto-triggered on W&B/Weave queries | Toolkit for querying training runs, traces, evaluations; relaunching runs; submitting new jobs to a Launch queue. |
+| `wbagent` | Auto-triggered on W&B queries | Toolkit for querying W&B runs, summaries, configs, histories, artifacts, sweeps, and reports through `wandb_helpers.py`. |
 
 Experiment report helpers live in `wandb-driven-dev`; generic W&B Reports SDK
 details come from the upstream `wbagent` reference at
 `skills/wbagent/references/REPORTS.md`.
 
-Fast count, top-k, and at-step comparison workflows are exposed through
-`skills/wandb-driven-dev/scripts/fast_wandb_query.py`, backed by reusable query
+Fast count, top-k, and at-step comparison workflows use reusable query
 primitives in `skills/wbagent/scripts/wandb_helpers.py`, so common W&B questions
 do not require one-off Python or broad run iteration.
 
@@ -46,7 +45,7 @@ progress-stage checks for slope shifts and sudden spikes.
 
 | Agent | When | Purpose |
 |---|---|---|
-| `wandb-query` | On-demand | Off-thread analysis of a W&B project / run / Weave evaluation. Frees the main thread from large query outputs. |
+| `wandb-query` | On-demand | Off-thread analysis of a W&B project or run. Frees the main thread from large query outputs. |
 | `reviewer` | Spawned by the `wandb-driven-dev` skill in Phase 5 | Reads the staged result, validates numbers against fresh W&B summaries, drafts the verdict and merge recommendation. |
 
 ### Templates
@@ -95,9 +94,9 @@ cleanup, gating each phase. Wandb runs use the `exp/<slug>` tag and
 
 ## Prerequisites
 
-- `wandb`, `weave`, and `pandas` Python packages on the Python you're running
+- `wandb` and `pandas` Python packages on the Python you're running
 - A W&B account with API key configured (`wandb login` or `WANDB_API_KEY`)
-- For Launch: at least one queue configured for your entity
+- For remote training: access to the launcher/queue recorded in project config
 
 ## Project config schema
 
@@ -145,7 +144,7 @@ wandb-driven-dev/
 ├── skills/
 │   ├── wandb-driven-dev/
 │   │   ├── SKILL.md
-│   │   └── scripts/{wdd_helpers.py, setup_project.py, fast_wandb_query.py, curve_analysis.py, create_report.py, watch_runs.py, bootstrap_experiment.sh}
+│   │   └── scripts/{wdd_helpers.py, setup_project.py, curve_analysis.py, create_report.py, watch_runs.py, bootstrap_experiment.sh}
 │   ├── wbagent/         # vendored copy of upstream wbagent; see .upstream-commit
 │   │   ├── SKILL.md
 │   │   ├── scripts/*.py

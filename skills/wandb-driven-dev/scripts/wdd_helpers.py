@@ -241,7 +241,7 @@ def curve_step_keys(cfg: dict[str, Any] | None, metrics: list[str]) -> dict[str,
 # Experiment gate helpers
 # ---------------------------------------------------------------------------
 
-def _load_fast_fetch_runs() -> Any:
+def _load_fetch_runs() -> Any:
     """Import wbagent's bounded GraphQL fetcher without caller setup."""
     import sys
 
@@ -282,7 +282,7 @@ def find_runs_by_config(
     requests only selected summary/config fields, and supports dotted nested
     config output such as `config.model.depth`.
     """
-    fast_fetch_runs = _load_fast_fetch_runs()
+    fetch_runs = _load_fetch_runs()
 
     filters: dict[str, Any] = {}
     for k, v in config_filters.items():
@@ -294,7 +294,7 @@ def find_runs_by_config(
     if extra_config_keys:
         config_keys.extend(k for k in extra_config_keys if k not in config_keys)
 
-    return fast_fetch_runs(
+    return fetch_runs(
         api,
         project,
         metric_keys=metric_keys or [],

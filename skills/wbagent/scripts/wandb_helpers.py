@@ -19,9 +19,9 @@ Key features:
 - All history methods require explicit keys to avoid 502s on runs with
   thousands of metrics
 
-Usage (in sandbox):
+    Usage (in sandbox):
     import sys
-    sys.path.insert(0, "skills/agent/wbagent/scripts")
+    sys.path.insert(0, "skills/wbagent/scripts")
     from wandb_helpers import (
         get_api,             # Create API with large-project-safe timeout
         probe_project,       # Discover project scale, metrics, config keys, artifacts
@@ -141,38 +141,6 @@ def probe_project(api: Any, path: str, sample_size: int = 3) -> dict[str, Any]:
         result["recommended_per_page"] = 50
     else:
         result["recommended_per_page"] = 100
-
-    # Probe Weave traces for this project (optional — silently skipped if unavailable)
-    try:
-        import logging as _logging
-        import weave as _weave  # local import — weave may not always be present
-        from weave.trace_server.trace_server_interface import (
-            CallsQueryStatsReq as _StatsReq,
-        )
-
-        _logging.getLogger("weave").setLevel(_logging.ERROR)
-        _client = _weave.init(path)
-        _stats = _client.server.calls_query_stats(_StatsReq(project_id=path))
-        result["weave_trace_count"] = _stats.count
-        if _stats.count > 0:
-            _sample = list(
-                _client.get_calls(
-                    limit=20,
-                    filter={"trace_roots_only": True},
-                    columns=["op_name"],
-                )
-            )
-            _ops: set[str] = set()
-            for _call in _sample:
-                op = getattr(_call, "op_name", None)
-                if op:
-                    _ops.add(op.rsplit("/", 1)[-1].split(":")[0])
-            result["weave_top_ops"] = sorted(_ops)
-        else:
-            result["weave_top_ops"] = []
-    except Exception:
-        result["weave_trace_count"] = None
-        result["weave_top_ops"] = []
 
     return result
 
@@ -695,10 +663,6 @@ def compare_runs_at_step(
         comparison[run_id] = run_result
     return comparison
 
-
-# Compatibility aliases for downstream scripts that used the WDD wrapper names.
-fast_fetch_runs = fetch_runs
-fast_fetch_run_summaries = fetch_run_summaries
 
 
 # ---------------------------------------------------------------------------

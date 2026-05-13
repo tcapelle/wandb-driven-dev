@@ -93,7 +93,7 @@ class SetupProjectPureTests(unittest.TestCase):
     def test_preflight_uses_selected_summary_graphql_by_default(self):
         calls = []
 
-        def fake_fast_fetch_run_summaries(api, project, run_ids, summary_keys=None, order="-created_at", per_page=50):
+        def fake_fetch_run_summaries(api, project, run_ids, summary_keys=None, order="-created_at", per_page=50):
             calls.append(
                 {
                     "project": project,
@@ -120,7 +120,7 @@ class SetupProjectPureTests(unittest.TestCase):
             ]
 
         with (
-            patch.object(setup_project, "fast_fetch_run_summaries", side_effect=fake_fast_fetch_run_summaries),
+            patch.object(setup_project, "fetch_run_summaries", side_effect=fake_fetch_run_summaries),
             patch.object(setup_project, "scan_history", side_effect=AssertionError("history scan should not run")),
         ):
             result = setup_project.preflight_wandb_step_keys(
@@ -150,13 +150,13 @@ class SetupProjectPureTests(unittest.TestCase):
         self.assertNotIn(TRAIN_LOSS, metadata.get("metric_values", {}))
 
     def test_run_setup_preflight_reads_config_selects_runs_and_writes_metadata(self):
-        def fake_fast_fetch_runs(api, project, metric_keys, filters, config_keys=None, order="-created_at", limit=50, per_page=50):
+        def fake_fetch_runs(api, project, metric_keys, filters, config_keys=None, order="-created_at", limit=50, per_page=50):
             self.assertEqual(metric_keys, [])
             self.assertEqual(filters, {"state": "finished"})
             self.assertEqual(limit, 3)
             return [{"name": "a"}, {"name": "b"}]
 
-        def fake_fast_fetch_run_summaries(api, project, run_ids, summary_keys=None, order="-created_at", per_page=50):
+        def fake_fetch_run_summaries(api, project, run_ids, summary_keys=None, order="-created_at", per_page=50):
             self.assertEqual(run_ids, ["a", "b"])
             return [
                 {"name": "a", "summary": {TRAIN_LOSS: 0.7, VAL_LOSS: 0.8, GLOBAL_STEP: 100}},
@@ -167,8 +167,8 @@ class SetupProjectPureTests(unittest.TestCase):
             path = Path(tmp) / "wandb-driven-dev.local.md"
             wdd_helpers.write_config(dict(BASE_CONFIG), path=path)
             with (
-                patch.object(setup_project, "fast_fetch_runs", side_effect=fake_fast_fetch_runs),
-                patch.object(setup_project, "fast_fetch_run_summaries", side_effect=fake_fast_fetch_run_summaries),
+                patch.object(setup_project, "fetch_runs", side_effect=fake_fetch_runs),
+                patch.object(setup_project, "fetch_run_summaries", side_effect=fake_fetch_run_summaries),
             ):
                 result = setup_project.run_setup_preflight(
                     api=object(),

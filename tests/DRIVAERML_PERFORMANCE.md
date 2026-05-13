@@ -10,45 +10,57 @@ Stable filter: `created_at < 2026-05-08`
 
 ## Query Shapes
 
-| Question | Hardcoded path | Latency budget | Golden |
+| Question | Helper path | Latency budget | Golden |
 | --- | --- | ---: | --- |
-| Best ABUPT 20k-step run by `val/surface_rel_l2` | `fast_wandb_query.py top` | 5s | `srehoxzc`, `0.07429194545928113` |
-| Finished runs with `train/global_step == 100000` | `fast_wandb_query.py count` | 2s | `52` |
-| Compare top two ABUPT 20k-step runs at step `15305` | `fast_wandb_query.py compare-step` | 30s | `srehoxzc` beats `bo2blqjb` |
+| Best ABUPT 20k-step run by `val/surface_rel_l2` | `wandb_helpers.fetch_runs` | 5s | `srehoxzc`, `0.07429194545928113` |
+| Finished runs with `train/global_step == 100000` | `wandb_helpers.count_runs` | 2s | `52` |
+| Compare top two ABUPT 20k-step runs at step `15305` | `wandb_helpers.compare_runs_at_step` | 30s | `srehoxzc` beats `bo2blqjb` |
 | Explain plot shape at step `15305` | `curve_analysis.py compare` | 30s | `srehoxzc` wins by train and validation value |
 | Compare 20 long 200k-step curves at step `150000` | `curve_analysis.py compare` | 30s | `bf00cxqu` wins train and validation value |
 
 ## Commands
 
 ```bash
-uv run --with wandb --with requests \
-  python skills/wandb-driven-dev/scripts/fast_wandb_query.py \
-  count milieu/drivaerml \
-  --filter 'created_at<2026-05-08' \
-  --filter 'summary_metrics.train/global_step=100000'
-```
+uv run --with wandb --with requests python - <<'PY'
+import sys
+sys.path.insert(0, "skills/wbagent/scripts")
+from wandb_helpers import get_api, fetch_runs, count_runs, compare_runs_at_step
 
-```bash
-uv run --with wandb --with requests \
-  python skills/wandb-driven-dev/scripts/fast_wandb_query.py \
-  top milieu/drivaerml \
-  --metric val/surface_rel_l2 \
-  --filter 'created_at<2026-05-08' \
-  --filter 'config.model.model_class=abupt' \
-  --filter 'config.max_steps=20000' \
-  --config max_steps,model \
-  --summary train/global_step \
-  --limit 2
-```
+api = get_api()
+project = "milieu/drivaerml"
 
-```bash
-uv run --with wandb --with requests \
-  python skills/wandb-driven-dev/scripts/fast_wandb_query.py \
-  compare-step milieu/drivaerml \
-  --runs srehoxzc,bo2blqjb \
-  --step 15305 \
-  --step-key train/global_step \
-  --metrics train/loss,val/surface_rel_l2,val/volume_rel_l2,val/u_rel_l2,val/loss
+print(count_runs(api, project, {
+    "state": "finished",
+    "created_at": {"$lt": "2026-05-08"},
+    "summary_metrics.train/global_step": 100000,
+}))
+
+rows = fetch_runs(
+    api,
+    project,
+    metric_keys=["val/surface_rel_l2", "val/volume_rel_l2", "train/global_step"],
+    filters={
+        "state": "finished",
+        "created_at": {"$lt": "2026-05-08"},
+        "config.model.model_class": "abupt",
+        "config.max_steps": 20000,
+    },
+    config_keys=["max_steps", "model"],
+    order="+summary_metrics.val/surface_rel_l2",
+    limit=2,
+    per_page=2,
+)
+print(rows)
+
+print(compare_runs_at_step(
+    api,
+    project,
+    run_ids=["srehoxzc", "bo2blqjb"],
+    step=15305,
+    step_key="train/global_step",
+    metrics=["train/loss", "val/surface_rel_l2", "val/volume_rel_l2", "val/u_rel_l2", "val/loss"],
+))
+PY
 ```
 
 ```bash

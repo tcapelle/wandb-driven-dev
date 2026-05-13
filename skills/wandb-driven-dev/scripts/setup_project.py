@@ -32,8 +32,8 @@ _WBAGENT_SCRIPTS = _HERE.parent.parent / "wbagent" / "scripts"
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_WBAGENT_SCRIPTS))
 from wandb_helpers import (  # noqa: E402
-    fetch_run_summaries as fast_fetch_run_summaries,
-    fetch_runs as fast_fetch_runs,
+    fetch_run_summaries,
+    fetch_runs,
     get_api,
     scan_history,
 )
@@ -523,7 +523,7 @@ def select_representative_runs(
     sample_runs: int = 3,
 ) -> list[str]:
     """Select a small recent-finished run sample without materializing a project."""
-    rows = fast_fetch_runs(
+    rows = fetch_runs(
         api,
         project,
         metric_keys=[],
@@ -551,7 +551,7 @@ def preflight_wandb_step_keys(
     candidates = step_key_candidates(metrics, candidate_step_keys)
     if not validate_history:
         summary_keys = _unique_columns([*metrics, *(key for key in candidates if key != "_step")])
-        summary_rows = fast_fetch_run_summaries(
+        summary_rows = fetch_run_summaries(
             api,
             project,
             run_ids=run_ids,
