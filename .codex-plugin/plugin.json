@@ -10,7 +10,6 @@
   "repository": "https://github.com/tcapelle/wandb-driven-dev",
   "keywords": [
     "wandb",
-    "weave",
     "ml",
     "experiment",
     "training",
@@ -21,7 +20,7 @@
   "interface": {
     "displayName": "W&B Driven Dev",
     "shortDescription": "Experiment-driven ML development workflows",
-    "longDescription": "Hypothesis-first ML experiment workflow with W&B-backed baselines, smoke gates, launch discipline, run monitoring, review, and experiment report helpers.",
+    "longDescription": "Hypothesis-first ML experiment workflow with W&B-backed baselines, project-local launcher and training-entrypoint setup, smoke gates, run monitoring, review, and experiment report helpers.",
     "developerName": "Thomas Capelle",
     "category": "Productivity",
     "capabilities": [

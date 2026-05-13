@@ -10,7 +10,7 @@ against, and a falsifier written before the run started. Nothing merges on vibes
 
 | Skill | Trigger | Purpose |
 |---|---|---|
-| `wandb-driven-dev` | `/wandb-driven-dev` (also auto-triggers on "experiment", "ablation", "is A better than B", and W&B Report requests) | The methodology — Phases 0–6 from setup to cleanup, with config, worktree bootstrap, smoke gates, launch, ETA-aware watcher, review, and experiment report helpers. |
+| `wandb-driven-dev` | `/wandb-driven-dev` (also auto-triggers on "experiment", "ablation", "is A better than B", setup/reconfigure, and W&B Report requests) | The methodology — Phases 0–6 from setup to cleanup, with project-local experiment launcher config, training entrypoint, worktree bootstrap, smoke gates, launch, ETA-aware watcher, review, and experiment report helpers. |
 | `wbagent` | Auto-triggered on W&B queries | Toolkit for querying W&B runs, summaries, configs, histories, artifacts, sweeps, and reports through `wandb_helpers.py`. |
 
 Experiment report helpers live in `wandb-driven-dev`; generic W&B Reports SDK
@@ -52,7 +52,8 @@ progress-stage checks for slope shifts and sudden spikes.
 
 `templates/wandb-driven-dev.local.md.template` — copy to your project as
 `.claude/wandb-driven-dev.local.md` for per-project config (W&B entity/project,
-launcher command, default metrics, GPU budgets, free-form notes).
+repo launcher command, training entrypoint, default metrics, GPU budgets,
+free-form notes).
 
 ## Install (local plugin)
 
@@ -78,8 +79,9 @@ to upstream manually and then reconcile the vendored copy deliberately.
 /wandb-driven-dev setup
 ```
 
-Claude interviews you for the W&B project, launcher command, training script
-location, GPU budgets, and decision/health metrics, then writes
+Claude interviews you for the W&B project, repo-specific experiment launcher
+command, training entrypoint, reproduction model, GPU budgets, and
+decision/health metrics, then writes
 `.claude/wandb-driven-dev.local.md`. Subsequent invocations read it.
 
 For a new experiment:
@@ -96,7 +98,8 @@ cleanup, gating each phase. Wandb runs use the `exp/<slug>` tag and
 
 - `wandb` and `pandas` Python packages on the Python you're running
 - A W&B account with API key configured (`wandb login` or `WANDB_API_KEY`)
-- For remote training: access to the launcher/queue recorded in project config
+- For remote training: access to the runner, scheduler, or cluster used by the
+  launcher command recorded in project config
 
 ## Project config schema
 
@@ -106,9 +109,11 @@ cleanup, gating each phase. Wandb runs use the `exp/<slug>` tag and
 ---
 wandb_project: entity/project
 launcher:
+  # Project-specific command to start/submit training; not W&B Launch.
   command: uv run python scripts/train.py
   reproduction: working_tree   # working_tree | clone | shared_fs | image
 training:
+  # Underlying training entrypoint used for --help flag validation.
   script: scripts/train.py
   config_dir: configs/
 gpus:

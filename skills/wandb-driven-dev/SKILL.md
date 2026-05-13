@@ -1,6 +1,6 @@
 ---
 name: wandb-driven-dev
-description: "Enforce a systematic, reproducible approach to empirical questions — hypothesis first, baseline + variant, smoke before full, wandb as source of truth. Use whenever the user asks 'does X work?', 'is A better than B?', 'what's the best N?', or says 'experiment', 'ablation', 'benchmark', 'sweep'. Also use for creating or updating W&B Reports, dashboards, and publishable run comparisons from W&B runs. Applies to ML training, ablations, perf benchmarks, correctness tests, and reportable experiment reviews."
+description: "Enforce a systematic, reproducible approach to empirical questions — hypothesis first, baseline + variant, smoke before full, wandb as source of truth. Use whenever the user asks 'does X work?', 'is A better than B?', 'what's the best N?', or says 'experiment', 'ablation', 'benchmark', 'sweep'. Also use for first-run setup/reconfigure of a repo's experiment launcher command, training entrypoint, reproduction model, GPU budgets, W&B metrics, and for W&B Reports from experiment runs."
 user-invocable: true
 argument-hint: "[setup | reconfigure | review experiment <slug> | <empty>]"
 allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Agent
@@ -36,6 +36,18 @@ W&B always has `_step`; keep that as the generic default. If a project logs
 semantic step metrics, persist them under `curves`. `curve_analysis.py compare`
 reads these mappings automatically; pass an explicit `--step-key` only for
 one-off at-step/debug commands.
+
+The launch fields are the repo's own experiment-starting contract, not W&B
+Launch:
+
+- `launcher.command`: exact command to copy-paste when starting or submitting a
+  training run (`uv run python scripts/train.py`, `sbatch ...`, `k8s/launch.py`,
+  etc.).
+- `launcher.reproduction`: how that command gets the code onto compute
+  (`working_tree`, `clone`, `shared_fs`, or `image`).
+- `training.script`: the underlying training entrypoint used for `--help` flag
+  validation and plan citations. It may differ from `launcher.command` when the
+  launcher is a wrapper or cluster submit script.
 
 ```yaml
 curves:
@@ -242,9 +254,9 @@ Each has a gate; do not advance until met.
 Skip if `.claude/wandb-driven-dev.local.md` exists. Otherwise interview the user via `AskUserQuestion`, then write the config:
 
 1. **wandb project** (e.g. `entity/project`).
-2. **Launch command** — exact string: a local invocation (`uv run python scripts/train.py …`) or a cluster submit (`uv run python k8s/launch.py …`, `sbatch slurm/train.sh …`). The skill does not care about the launcher family beyond what reproduction model it uses.
+2. **Experiment launcher command** — exact string: a local invocation (`uv run python scripts/train.py …`) or a cluster submit (`uv run python k8s/launch.py …`, `sbatch slurm/train.sh …`). This is the repo's launcher, not W&B Launch; the skill only cares how to reproduce it.
 3. **Reproduction model** — how does the launcher get the code? `working_tree` (local, runs uncommitted edits as-is), `clone` (submitter clones origin/HEAD; needs clean tree + pushed commit), `shared_fs` (compute mounts the working tree), `image` (built/pushed before submit).
-4. **Training script + config dir** — for plan.md to cite without guessing.
+4. **Training entrypoint + config dir** — the script that actually parses training flags, plus config directory if any. Use this for `--help` validation even when `launcher.command` is a wrapper.
 5. **GPU defaults** — smoke (usually 1) and full (project-typical).
 6. **Decision metrics** — exact wandb keys driving pass/fail. Probe the project before asking, so the question is grounded:
    ```python
@@ -320,9 +332,10 @@ Inherited from `.claude/wandb-driven-dev.local.md` unless overridden here.
 - **Health:** ...
 
 ## Report Columns
-Optional focused table columns for the report: config inputs changed by the
-experiment and summary outputs you care about. Use keys like `config.lr`,
-`config.model.depth`, `val/loss`.
+<!-- Optional. Bullet lines only; prose is ignored by the parser. -->
+<!-- List config inputs changed and summary outputs you care about. -->
+<!-- Example: -->
+<!-- - config.lr, config.model.depth, val/loss -->
 
 ## Design        (filled in Phase 2)
 ## Smoke         (filled in Phase 3)
@@ -394,7 +407,9 @@ Submit baseline and variant with the approved commands. Use `--wandb_tags exp/<s
 
 Create the live dashboard via the hardcoded report workflow. It resolves run
 URLs from W&B and `plan.md`, validates every decision/health metric, creates a
-pinned report, and splices run/report URLs into `## Runs`:
+draft report (pass `--publish` to save non-draft), and splices run/report URLs
+into `## Runs`. The report x-axis defaults to `cfg.curves.default_step_key`
+(falling back to `_step`); override with `--x-axis` if needed:
 
 ```bash
 uv run python ${CLAUDE_PLUGIN_ROOT}/skills/wandb-driven-dev/scripts/create_report.py <slug>

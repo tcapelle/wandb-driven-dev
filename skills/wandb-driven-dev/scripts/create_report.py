@@ -110,11 +110,9 @@ def _plan_report_columns(plan_text: str) -> list[str]:
     columns: list[str] = []
     for line in body.splitlines():
         stripped = line.strip()
-        if not stripped:
+        if not stripped.startswith("-"):
             continue
-        if stripped.startswith("-"):
-            stripped = stripped[1:].strip()
-        columns.extend(_parse_list(stripped))
+        columns.extend(_parse_list(stripped[1:].strip()))
     return list(dict.fromkeys(columns))
 
 
@@ -284,7 +282,13 @@ def main() -> None:
         default=None,
         help="Comma-separated required roles. Default requires baseline and one variant.",
     )
-    parser.add_argument("--x-axis", "--x_axis", dest="x_axis", default="train/global_step")
+    parser.add_argument(
+        "--x-axis",
+        "--x_axis",
+        dest="x_axis",
+        default=None,
+        help="Report x-axis. Defaults to cfg.curves.default_step_key (else _step).",
+    )
     parser.add_argument(
         "--columns",
         default=None,
@@ -351,6 +355,8 @@ def main() -> None:
     question = _first_field(plan_text, "Question")
     falsifier = _section(plan_text, "Falsifier").replace("\n", " ").strip() or None
 
+    x_axis = args.x_axis or (cfg.get("curves") or {}).get("default_step_key") or "_step"
+
     report_url = create_experiment_report(
         project=project,
         slug=args.slug,
@@ -361,7 +367,7 @@ def main() -> None:
         report_columns=report_columns,
         report_column_values=report_column_values,
         runs=runs,
-        x_axis=args.x_axis,
+        x_axis=x_axis,
         draft=not args.publish,
     )
 

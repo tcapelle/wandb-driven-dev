@@ -6,6 +6,10 @@ This module only contains things tied to the wandb-driven-dev experiment workflo
 - Project config schema + read/write at `.claude/wandb-driven-dev.local.md`.
   The file is YAML frontmatter (structured fields) followed by a markdown body
   (free-form project notes the agents read verbatim).
+- Project-local experiment launch configuration. `launcher.command` is the
+  repo-specific command used to start/submit training; `training.script` is the
+  underlying training entrypoint used for flag validation. This is distinct from
+  W&B Launch.
 - Experiment gates for config-based lookup, required metric checks, run
   resolution, runtime estimates, and training flag validation.
 - Report builders for experiment dashboards and run comparisons.
@@ -34,7 +38,7 @@ def default_config() -> dict[str, Any]:
             "reproduction": "working_tree",  # working_tree | clone | shared_fs | image
         },
         "training": {
-            "script": "",
+            "script": "",  # underlying training entrypoint, even if launcher is a wrapper
             "config_dir": "",
         },
         "gpus": {

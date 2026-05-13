@@ -44,6 +44,15 @@ fi
 mkdir -p "$PARENT"
 git -C "$REPO_ROOT" worktree add "$WT" -b "$BRANCH" >&2
 
+# Copy the gitignored project config into the worktree so read_config()
+# resolves the same settings the main checkout uses.
+CFG_REL=".claude/wandb-driven-dev.local.md"
+if [ -f "$REPO_ROOT/$CFG_REL" ]; then
+  mkdir -p "$WT/.claude"
+  cp "$REPO_ROOT/$CFG_REL" "$WT/$CFG_REL"
+  echo "Copied $CFG_REL into worktree" >&2
+fi
+
 # Un-ignore experiments/ on this branch if needed (a no-op when main already fixed it)
 if grep -qE '^/?experiments/?$' "$WT/.gitignore" 2>/dev/null; then
   sed -i.bak -E '/^\/?experiments\/?$/d' "$WT/.gitignore"
@@ -87,11 +96,10 @@ Inherited from \`.claude/wandb-driven-dev.local.md\` unless overridden here.
 - **Health:** (override list, or "use config default")
 
 ## Report Columns
-Optional focused table columns for the report: config inputs changed by the
-experiment and summary outputs you care about. Examples:
-- config.lr
-- config.model.depth
-- val/loss
+<!-- Optional. Bullet lines only; prose is ignored by the parser. -->
+<!-- List config inputs changed and summary outputs you care about. -->
+<!-- Example: -->
+<!-- - config.lr, config.model.depth, val/loss -->
 
 ## Design        (filled in Phase 2)
 ## Smoke         (filled in Phase 3)
